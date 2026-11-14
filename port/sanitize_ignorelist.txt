@@ -1,0 +1,8 @@
+# UBSan exclusions for the PORT_SANITIZE build (CMakeLists.txt).
+#
+# The reconstructed Metrowerks containers keep their end sentinel as a bare link and
+# static_cast it to the full node type, which UBSan reports as a downcast into too
+# little space. Nothing reads the missing node fields; this is how the library was built.
+[undefined]
+src:*/pokemon-rumble-decomp-tv/include/list
+src:*/pokemon-rumble-decomp-tv/include/MSL_CPP/detail/tree.h

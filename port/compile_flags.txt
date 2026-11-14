@@ -26,6 +26,8 @@ port/include/port_prefix.h
 -Werror=int-to-pointer-cast
 -Werror=int-to-void-pointer-cast
 -Werror=pointer-to-int-cast
+# A non-POD object passed through `...`: clang compiles the call to a trap.
+-Werror=non-pod-varargs
 
 c: -std=gnu99
 # The reconstructed Metrowerks C++ library replaces the host's; CodeWarrior parsed

@@ -38,7 +38,10 @@ GROUPS = {
     "sdk": ["src/RVL_SDK/gx/GX[!F]*.c", "src/RVL_SDK/gx/GXFrameBuf.c",  # GXFifo.c: replaced by port/gx
              "src/RVL_SDK/mtx/*.c", "src/RVL_SDK/mem/*.c", "src/RVL_SDK/arc/*.c",
             "src/RVL_SDK/cx/*.c", "src/RVL_SDK/tpl/*.c", "src/RVL_SDK/axfx/*.c", "src/RVL_SDK/enc/*.c",
-            "src/RVL_SDK/gd/*.c", "src/TMC_JPEG/*.c", "src/RevoEX/net/sha1.c"],
+            "src/RVL_SDK/gd/*.c", "src/TMC_JPEG/*.c", "src/RevoEX/net/sha1.c",
+            # OS units with no hardware access; the scheduler they call is port/os.
+            "src/RVL_SDK/os/OSMutex.c", "src/RVL_SDK/os/OSMessage.c", "src/RVL_SDK/os/OSSemaphore.c",
+            "src/RVL_SDK/os/OSCrc.c"],
 }
 
 # Units that include files tools/import_wad.py generates from the user's game files.

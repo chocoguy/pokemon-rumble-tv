@@ -7,6 +7,7 @@
 #include <nw4r/ef/ef_res_animcurve.h>
 #include <nw4r/ef/ef_particle.h>
 #include <revolution/tpl.h>
+#include <revolution/gx/GXTypes.h>
 
 #define CHECK_SIZE(T, n) typedef char size_of_##T[sizeof(T) == (n) ? 1 : -1]
 #define CHECK_OFFSET(T, m, n) typedef char offset_of_##T##_##m[offsetof(T, m) == (n) ? 1 : -1]
@@ -57,3 +58,13 @@ CHECK_OFFSET(TPLClutHeader, data, 8);
 CHECK_SIZE(TPLHeader, 36);
 CHECK_OFFSET(TPLHeader, data, 8);
 CHECK_OFFSET(TPLHeader, wrapS, 12);
+
+// gx: the SDK's internal object layouts must fit the public opaque structs (GXTexObj is
+// also embedded in .brres materials).
+CHECK_SIZE(GXTexObj, 32);
+typedef char gx_texobj_fits[sizeof(GXTexObjInt) <= sizeof(GXTexObj) ? 1 : -1];
+typedef char gx_tlutobj_fits[sizeof(GXTlutObjInt) <= sizeof(GXTlutObj) ? 1 : -1];
+typedef char gx_lightobj_fits[sizeof(GXLightObjInt) <= sizeof(GXLightObj) ? 1 : -1];
+typedef char gx_texregion_fits[sizeof(GXTexRegionInt) <= sizeof(GXTexRegion) ? 1 : -1];
+typedef char gx_tlutregion_fits[sizeof(GXTlutRegionInt) <= sizeof(GXTlutRegion) ? 1 : -1];
+typedef char gx_fifo_fits[sizeof(__GXFifoObj) <= sizeof(GXFifoObj) ? 1 : -1];

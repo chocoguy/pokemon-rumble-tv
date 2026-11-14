@@ -56,9 +56,22 @@ target_compile_options(rumble_fork PRIVATE ${FORK_FLAGS} -g)
 set_target_properties(rumble_fork PROPERTIES CXX_STANDARD 98 CXX_EXTENSIONS ON)
 
 # The port: the host side of the Wii SDK (grows phase by phase).
-file(GLOB PORT_SOURCES CONFIGURE_DEPENDS ${ROOT}/port/os/*.c ${ROOT}/port/os/*.cpp)
+file(GLOB PORT_SOURCES CONFIGURE_DEPENDS ${ROOT}/port/*/*.c ${ROOT}/port/*/*.cpp)
 add_library(rumble_port STATIC ${PORT_SOURCES})
 target_compile_options(rumble_port PRIVATE ${FORK_FLAGS} -g)
+
+# -DPORT_SANITIZE=ON: AddressSanitizer and UndefinedBehaviorSanitizer on everything
+# (the phase 2 check runs this build).
+option(PORT_SANITIZE "Build with ASan and UBSan" OFF)
+if(PORT_SANITIZE)
+    # -O0 like the normal build: optimisation changes which inline game functions are
+    # emitted, and the fork relies on the unoptimised set.
+    set(SANITIZE_FLAGS -fsanitize=address,undefined -fno-sanitize=vptr,function -fno-omit-frame-pointer
+        -fsanitize-ignorelist=${ROOT}/port/sanitize_ignorelist.txt)
+    foreach(target rumble_fork rumble_port)
+        target_compile_options(${target} PRIVATE ${SANITIZE_FLAGS})
+    endforeach()
+endif()
 
 # Stubs for everything neither the fork nor the port defines yet.
 set(LINK_STUBS ${CMAKE_BINARY_DIR}/link_stubs.c)
@@ -70,4 +83,15 @@ add_custom_command(
     COMMENT "Generating link stubs")
 
 add_executable(rumble ${ROOT}/platform/headless/main.c ${LINK_STUBS})
+set_source_files_properties(${ROOT}/platform/headless/main.c PROPERTIES COMPILE_OPTIONS "${FORK_COMMON_FLAGS};${FORK_C_FLAGS};-g")
 target_link_libraries(rumble PRIVATE rumble_fork rumble_port)
+if(PORT_SANITIZE)
+    target_compile_options(rumble PRIVATE ${SANITIZE_FLAGS})
+    target_link_options(rumble PRIVATE ${SANITIZE_FLAGS})
+endif()
+
+# ctest: the asset fixups over every content file, and the phase 2 boot check (run it
+# from the PORT_SANITIZE build for ASan/UBSan). Both need the imported game files.
+enable_testing()
+add_test(NAME check_assets COMMAND rumble --check-assets)
+add_test(NAME boot_600_frames COMMAND ${ROOT}/tests/headless/boot.sh $<TARGET_FILE:rumble> 600 ${CMAKE_BINARY_DIR}/boot-test)

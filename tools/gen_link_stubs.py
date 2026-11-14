@@ -92,7 +92,9 @@ def main():
     defined, undefined = archive_symbols(args.archives)
     # The linker itself provides these.
     linker_provided = {"___dso_handle", "__mh_execute_header", "__mh_dylib_header"}
-    missing = sorted(n for n in undefined - defined - system - linker_provided)
+    # Sanitizer builds call into the sanitizer runtime, which the linker adds itself.
+    runtime_prefixes = ("___asan_", "___ubsan_", "___sanitizer_", "___lsan_")
+    missing = sorted(n for n in undefined - defined - system - linker_provided if not n.startswith(runtime_prefixes))
 
     kinds = c_symbol_kinds()
     cxx = [n for n in missing if n.startswith("__Z")]
