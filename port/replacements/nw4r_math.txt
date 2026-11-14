@@ -1,0 +1,155 @@
+# C versions of NW4R math's paired-single code (tools/port_replace.py).
+# Semantics are read from each original; outputs go through temporaries because the
+# originals tolerate pOut aliasing an input.
+
+@@ src/nw4r/math/math_arithmetic.cpp FrSqrt
+f32 FrSqrt(f32 x) {
+    // The original refines frsqrte with one Newton step.
+    return 1.0f / __builtin_sqrtf(x);
+}
+
+@@ src/nw4r/math/math_triangular.cpp SinCosFIdx
+void SinCosFIdx(f32* pSin, f32* pCos, f32 fidx) {
+    // Same lookup as SinFIdx and CosFIdx: 256 table entries per turn, linear interpolation.
+    f32 abs_fidx = FAbs(fidx);
+    while (abs_fidx > 65536.0f) {
+        abs_fidx -= 65536.0f;
+    }
+    u16 whole = F32ToU16(abs_fidx);
+    f32 frac = abs_fidx - U16ToF32(whole);
+    const detail::SinCosSample& rSample = detail::gSinCosTbl[whole & 255];
+    // ps_madds0 in the original: fused, unlike SinFIdx and CosFIdx.
+    f32 sin = __builtin_fmaf(rSample.sin_delta, frac, rSample.sin_val);
+    *pCos = __builtin_fmaf(rSample.cos_delta, frac, rSample.cos_val);
+    *pSin = (fidx < 0.0f) ? -sin : sin;
+}
+
+@@ src/nw4r/math/math_types.cpp VEC3Maximize
+VEC3* VEC3Maximize(VEC3* pOut, const VEC3* pA, const VEC3* pB) {
+    // fsel(a - b, a, b): a when a - b >= 0, otherwise b (also when the difference is NaN).
+    pOut->x = (pA->x - pB->x >= 0.0f) ? pA->x : pB->x;
+    pOut->y = (pA->y - pB->y >= 0.0f) ? pA->y : pB->y;
+    pOut->z = (pA->z - pB->z >= 0.0f) ? pA->z : pB->z;
+    return pOut;
+}
+
+@@ src/nw4r/math/math_types.cpp VEC3Minimize
+VEC3* VEC3Minimize(VEC3* pOut, const VEC3* pA, const VEC3* pB) {
+    // fsel(b - a, a, b)
+    pOut->x = (pB->x - pA->x >= 0.0f) ? pA->x : pB->x;
+    pOut->y = (pB->y - pA->y >= 0.0f) ? pA->y : pB->y;
+    pOut->z = (pB->z - pA->z >= 0.0f) ? pA->z : pB->z;
+    return pOut;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX33Identity
+MTX33* MTX33Identity(MTX33* pMtx) {
+    pMtx->_00 = 1.0f; pMtx->_01 = 0.0f; pMtx->_02 = 0.0f;
+    pMtx->_10 = 0.0f; pMtx->_11 = 1.0f; pMtx->_12 = 0.0f;
+    pMtx->_20 = 0.0f; pMtx->_21 = 0.0f; pMtx->_22 = 1.0f;
+    return pMtx;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX34ToMTX33
+MTX33* MTX34ToMTX33(MTX33* pOut, const MTX34* pIn) {
+    pOut->_00 = pIn->_00; pOut->_01 = pIn->_01; pOut->_02 = pIn->_02;
+    pOut->_10 = pIn->_10; pOut->_11 = pIn->_11; pOut->_12 = pIn->_12;
+    pOut->_20 = pIn->_20; pOut->_21 = pIn->_21; pOut->_22 = pIn->_22;
+    return pOut;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX34InvTranspose
+u32 MTX34InvTranspose(MTX33* pOut, const MTX34* pIn) {
+    // Inverse transpose of the 3x3 part: the cofactor matrix divided by the determinant.
+    const f32 c00 = pIn->_11 * pIn->_22 - pIn->_12 * pIn->_21;
+    const f32 c01 = pIn->_12 * pIn->_20 - pIn->_10 * pIn->_22;
+    const f32 c02 = pIn->_10 * pIn->_21 - pIn->_11 * pIn->_20;
+    const f32 c10 = pIn->_02 * pIn->_21 - pIn->_01 * pIn->_22;
+    const f32 c11 = pIn->_00 * pIn->_22 - pIn->_02 * pIn->_20;
+    const f32 c12 = pIn->_01 * pIn->_20 - pIn->_00 * pIn->_21;
+    const f32 c20 = pIn->_01 * pIn->_12 - pIn->_02 * pIn->_11;
+    const f32 c21 = pIn->_02 * pIn->_10 - pIn->_00 * pIn->_12;
+    const f32 c22 = pIn->_00 * pIn->_11 - pIn->_01 * pIn->_10;
+    const f32 det = pIn->_00 * c00 + pIn->_01 * c01 + pIn->_02 * c02;
+    if (det == 0.0f) {
+        return FALSE;
+    }
+    const f32 inv = 1.0f / det;
+    pOut->_00 = c00 * inv; pOut->_01 = c01 * inv; pOut->_02 = c02 * inv;
+    pOut->_10 = c10 * inv; pOut->_11 = c11 * inv; pOut->_12 = c12 * inv;
+    pOut->_20 = c20 * inv; pOut->_21 = c21 * inv; pOut->_22 = c22 * inv;
+    return TRUE;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX34Zero
+MTX34* MTX34Zero(MTX34* pMtx) {
+    pMtx->_00 = pMtx->_01 = pMtx->_02 = pMtx->_03 = 0.0f;
+    pMtx->_10 = pMtx->_11 = pMtx->_12 = pMtx->_13 = 0.0f;
+    pMtx->_20 = pMtx->_21 = pMtx->_22 = pMtx->_23 = 0.0f;
+    return pMtx;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX34Scale
+MTX34* MTX34Scale(MTX34* pOut, const MTX34* pIn, const VEC3* pScale) {
+    // pIn * scale: columns 0-2 scaled, translation kept.
+    const f32 x = pScale->x, y = pScale->y, z = pScale->z;
+    pOut->_00 = pIn->_00 * x; pOut->_01 = pIn->_01 * y; pOut->_02 = pIn->_02 * z; pOut->_03 = pIn->_03;
+    pOut->_10 = pIn->_10 * x; pOut->_11 = pIn->_11 * y; pOut->_12 = pIn->_12 * z; pOut->_13 = pIn->_13;
+    pOut->_20 = pIn->_20 * x; pOut->_21 = pIn->_21 * y; pOut->_22 = pIn->_22 * z; pOut->_23 = pIn->_23;
+    return pOut;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX34Trans
+MTX34* MTX34Trans(MTX34* pOut, const MTX34* pIn, const VEC3* pTrans) {
+    // pIn * translation: the 3x3 part kept, the translation moved by pIn applied to pTrans.
+    const f32 x = pTrans->x, y = pTrans->y, z = pTrans->z;
+    const f32 t0 = pIn->_00 * x + pIn->_01 * y + pIn->_02 * z + pIn->_03;
+    const f32 t1 = pIn->_10 * x + pIn->_11 * y + pIn->_12 * z + pIn->_13;
+    const f32 t2 = pIn->_20 * x + pIn->_21 * y + pIn->_22 * z + pIn->_23;
+    pOut->_00 = pIn->_00; pOut->_01 = pIn->_01; pOut->_02 = pIn->_02; pOut->_03 = t0;
+    pOut->_10 = pIn->_10; pOut->_11 = pIn->_11; pOut->_12 = pIn->_12; pOut->_13 = t1;
+    pOut->_20 = pIn->_20; pOut->_21 = pIn->_21; pOut->_22 = pIn->_22; pOut->_23 = t2;
+    return pOut;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX34RotXYZFIdx
+MTX34* MTX34RotXYZFIdx(MTX34* pMtx, f32 fx, f32 fy, f32 fz) {
+    // Rz * Ry * Rx, angles in table units (256 per turn), no translation.
+    f32 sinx, cosx, siny, cosy, sinz, cosz;
+    SinCosFIdx(&sinx, &cosx, fx);
+    SinCosFIdx(&siny, &cosy, fy);
+    SinCosFIdx(&sinz, &cosz, fz);
+    const f32 cxcz = cosx * cosz;
+    const f32 sxsy = sinx * siny;
+    const f32 cxsz = cosx * sinz;
+    pMtx->_00 = cosz * cosy;
+    pMtx->_10 = sinz * cosy;
+    pMtx->_20 = -siny;
+    pMtx->_01 = sxsy * cosz - cxsz;
+    pMtx->_11 = sxsy * sinz + cxcz;
+    pMtx->_21 = sinx * cosy;
+    pMtx->_02 = cxcz * siny + sinx * sinz;
+    pMtx->_12 = cxsz * siny - sinx * cosz;
+    pMtx->_22 = cosx * cosy;
+    pMtx->_03 = 0.0f;
+    pMtx->_13 = 0.0f;
+    pMtx->_23 = 0.0f;
+    return pMtx;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX44Identity
+MTX44* MTX44Identity(MTX44* pMtx) {
+    pMtx->_00 = 1.0f; pMtx->_01 = 0.0f; pMtx->_02 = 0.0f; pMtx->_03 = 0.0f;
+    pMtx->_10 = 0.0f; pMtx->_11 = 1.0f; pMtx->_12 = 0.0f; pMtx->_13 = 0.0f;
+    pMtx->_20 = 0.0f; pMtx->_21 = 0.0f; pMtx->_22 = 1.0f; pMtx->_23 = 0.0f;
+    pMtx->_30 = 0.0f; pMtx->_31 = 0.0f; pMtx->_32 = 0.0f; pMtx->_33 = 1.0f;
+    return pMtx;
+}
+
+@@ src/nw4r/math/math_types.cpp MTX44Copy
+MTX44* MTX44Copy(MTX44* pDst, const MTX44* pSrc) {
+    if (pDst != pSrc) {
+        *pDst = *pSrc;
+    }
+    return pDst;
+}

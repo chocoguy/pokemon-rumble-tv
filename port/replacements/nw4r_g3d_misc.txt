@@ -1,0 +1,28 @@
+# C versions of g3d's block copies (tools/port_replace.py).
+
+@@ src/nw4r/g3d/g3d_fog.cpp CopyTo
+Fog Fog::CopyTo(void* pDst) const {
+    // FogData is 48 bytes with no pointers; the original copies it as six doubles.
+    typedef char FogDataIs48Bytes[sizeof(FogData) == 48 ? 1 : -1];
+    if (pDst != NULL && IsValid()) {
+        __builtin_memcpy(pDst, ptr(), 48);
+        return Fog(static_cast<FogData*>(pDst));
+    }
+    return Fog(NULL);
+}
+
+@@ src/nw4r/g3d/platform/g3d_cpu.cpp Copy32ByteBlocks
+void Copy32ByteBlocks(void* pDst, const void* pSrc, u32 size) {
+    // Whole 32-byte blocks only, as the original.
+    __builtin_memcpy(pDst, pSrc, size & ~31u);
+}
+
+@@ src/nw4r/g3d/platform/g3d_cpu.cpp ZeroMemory32ByteBlocks
+void ZeroMemory32ByteBlocks(void* pDst, u32 size) {
+    __builtin_memset(pDst, 0, size & ~31u);
+}
+
+@@ src/nw4r/g3d/platform/g3d_cpu.cpp ZeroMemory16ByteBlocks
+void ZeroMemory16ByteBlocks(void* pDst, u32 size) {
+    __builtin_memset(pDst, 0, size & ~15u);
+}

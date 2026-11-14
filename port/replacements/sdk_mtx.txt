@@ -1,0 +1,217 @@
+# C versions of the SDK's paired-single matrix and vector functions (tools/port_replace.py).
+# Mtx is f32[3][4], row-major, with an implicit fourth row of 0 0 0 1.
+# Results are written through temporaries, because the originals allow dst to alias a source.
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXIdentity
+void PSMTXIdentity(Mtx m) {
+    m[0][0] = 1.0f; m[0][1] = 0.0f; m[0][2] = 0.0f; m[0][3] = 0.0f;
+    m[1][0] = 0.0f; m[1][1] = 1.0f; m[1][2] = 0.0f; m[1][3] = 0.0f;
+    m[2][0] = 0.0f; m[2][1] = 0.0f; m[2][2] = 1.0f; m[2][3] = 0.0f;
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXCopy
+void PSMTXCopy(const Mtx src, Mtx dst) {
+    int i, j;
+    if (src == (const f32(*)[4])dst) {
+        return;
+    }
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < 4; j++) {
+            dst[i][j] = src[i][j];
+        }
+    }
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXConcat
+void PSMTXConcat(const Mtx a, const Mtx b, Mtx ab) {
+    Mtx t;
+    int i;
+    for (i = 0; i < 3; i++) {
+        t[i][0] = a[i][0] * b[0][0] + a[i][1] * b[1][0] + a[i][2] * b[2][0];
+        t[i][1] = a[i][0] * b[0][1] + a[i][1] * b[1][1] + a[i][2] * b[2][1];
+        t[i][2] = a[i][0] * b[0][2] + a[i][1] * b[1][2] + a[i][2] * b[2][2];
+        t[i][3] = a[i][0] * b[0][3] + a[i][1] * b[1][3] + a[i][2] * b[2][3] + a[i][3];
+    }
+    PSMTXCopy(t, ab);
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXConcatArray
+void PSMTXConcatArray(const Mtx a, const Mtx* srcBase, Mtx* dstBase, u32 count) {
+    u32 i;
+    for (i = 0; i < count; i++) {
+        PSMTXConcat(a, srcBase[i], dstBase[i]);
+    }
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXInverse
+u32 PSMTXInverse(const Mtx src, Mtx inv) {
+    /* Inverse of the 3x3 part by cofactors; the translation is -inverse * translation. */
+    Mtx t;
+    f32 det;
+    det = src[0][0] * (src[1][1] * src[2][2] - src[1][2] * src[2][1])
+        - src[0][1] * (src[1][0] * src[2][2] - src[1][2] * src[2][0])
+        + src[0][2] * (src[1][0] * src[2][1] - src[1][1] * src[2][0]);
+    if (det == 0.0f) {
+        return 0;
+    }
+    det = 1.0f / det;
+    t[0][0] = (src[1][1] * src[2][2] - src[2][1] * src[1][2]) * det;
+    t[0][1] = -(src[0][1] * src[2][2] - src[2][1] * src[0][2]) * det;
+    t[0][2] = (src[0][1] * src[1][2] - src[1][1] * src[0][2]) * det;
+    t[1][0] = -(src[1][0] * src[2][2] - src[2][0] * src[1][2]) * det;
+    t[1][1] = (src[0][0] * src[2][2] - src[2][0] * src[0][2]) * det;
+    t[1][2] = -(src[0][0] * src[1][2] - src[1][0] * src[0][2]) * det;
+    t[2][0] = (src[1][0] * src[2][1] - src[2][0] * src[1][1]) * det;
+    t[2][1] = -(src[0][0] * src[2][1] - src[2][0] * src[0][1]) * det;
+    t[2][2] = (src[0][0] * src[1][1] - src[1][0] * src[0][1]) * det;
+    t[0][3] = -(t[0][0] * src[0][3] + t[0][1] * src[1][3] + t[0][2] * src[2][3]);
+    t[1][3] = -(t[1][0] * src[0][3] + t[1][1] * src[1][3] + t[1][2] * src[2][3]);
+    t[2][3] = -(t[2][0] * src[0][3] + t[2][1] * src[1][3] + t[2][2] * src[2][3]);
+    PSMTXCopy(t, inv);
+    return 1;
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXRotTrig
+void PSMTXRotTrig(Mtx m, char axis, f32 sinA, f32 cosA) {
+    switch (axis) {
+    case 'x':
+    case 'X':
+        m[0][0] = 1.0f; m[0][1] = 0.0f; m[0][2] = 0.0f; m[0][3] = 0.0f;
+        m[1][0] = 0.0f; m[1][1] = cosA; m[1][2] = -sinA; m[1][3] = 0.0f;
+        m[2][0] = 0.0f; m[2][1] = sinA; m[2][2] = cosA; m[2][3] = 0.0f;
+        break;
+    case 'y':
+    case 'Y':
+        m[0][0] = cosA; m[0][1] = 0.0f; m[0][2] = sinA; m[0][3] = 0.0f;
+        m[1][0] = 0.0f; m[1][1] = 1.0f; m[1][2] = 0.0f; m[1][3] = 0.0f;
+        m[2][0] = -sinA; m[2][1] = 0.0f; m[2][2] = cosA; m[2][3] = 0.0f;
+        break;
+    case 'z':
+    case 'Z':
+        m[0][0] = cosA; m[0][1] = -sinA; m[0][2] = 0.0f; m[0][3] = 0.0f;
+        m[1][0] = sinA; m[1][1] = cosA; m[1][2] = 0.0f; m[1][3] = 0.0f;
+        m[2][0] = 0.0f; m[2][1] = 0.0f; m[2][2] = 1.0f; m[2][3] = 0.0f;
+        break;
+    default:
+        break;
+    }
+}
+
+@@ src/RVL_SDK/mtx/mtx.c __PSMTXRotAxisRadInternal
+static void __PSMTXRotAxisRadInternal(Mtx m, const Vec* axis, f32 sT, f32 cT) {
+    Vec n;
+    f32 tT = 1.0f - cT;
+    PSVECNormalize(axis, &n);
+    m[0][0] = tT * n.x * n.x + cT;
+    m[0][1] = tT * n.x * n.y - sT * n.z;
+    m[0][2] = tT * n.x * n.z + sT * n.y;
+    m[0][3] = 0.0f;
+    m[1][0] = tT * n.x * n.y + sT * n.z;
+    m[1][1] = tT * n.y * n.y + cT;
+    m[1][2] = tT * n.y * n.z - sT * n.x;
+    m[1][3] = 0.0f;
+    m[2][0] = tT * n.x * n.z - sT * n.y;
+    m[2][1] = tT * n.y * n.z + sT * n.x;
+    m[2][2] = tT * n.z * n.z + cT;
+    m[2][3] = 0.0f;
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXTrans
+void PSMTXTrans(Mtx m, f32 xT, f32 yT, f32 zT) {
+    m[0][0] = 1.0f; m[0][1] = 0.0f; m[0][2] = 0.0f; m[0][3] = xT;
+    m[1][0] = 0.0f; m[1][1] = 1.0f; m[1][2] = 0.0f; m[1][3] = yT;
+    m[2][0] = 0.0f; m[2][1] = 0.0f; m[2][2] = 1.0f; m[2][3] = zT;
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXTransApply
+void PSMTXTransApply(const Mtx src, Mtx dst, f32 xT, f32 yT, f32 zT) {
+    /* dst = translation * src */
+    PSMTXCopy(src, dst);
+    dst[0][3] += xT;
+    dst[1][3] += yT;
+    dst[2][3] += zT;
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXScale
+void PSMTXScale(Mtx m, f32 xS, f32 yS, f32 zS) {
+    m[0][0] = xS;   m[0][1] = 0.0f; m[0][2] = 0.0f; m[0][3] = 0.0f;
+    m[1][0] = 0.0f; m[1][1] = yS;   m[1][2] = 0.0f; m[1][3] = 0.0f;
+    m[2][0] = 0.0f; m[2][1] = 0.0f; m[2][2] = zS;   m[2][3] = 0.0f;
+}
+
+@@ src/RVL_SDK/mtx/mtx.c PSMTXScaleApply
+void PSMTXScaleApply(const Mtx src, Mtx dst, f32 xS, f32 yS, f32 zS) {
+    /* dst = scale * src: each row scaled by its own factor */
+    const f32 s[3] = {xS, yS, zS};
+    int i, j;
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < 4; j++) {
+            dst[i][j] = src[i][j] * s[i];
+        }
+    }
+}
+
+@@ src/RVL_SDK/mtx/vec.c PSVECAdd
+void PSVECAdd(const Vec* vec1, const Vec* vec2, Vec* dst) {
+    f32 x = vec1->x + vec2->x, y = vec1->y + vec2->y, z = vec1->z + vec2->z;
+    dst->x = x; dst->y = y; dst->z = z;
+}
+
+@@ src/RVL_SDK/mtx/vec.c PSVECNormalize
+void PSVECNormalize(const Vec* vec1, Vec* dst) {
+    /* The original multiplies by a refined reciprocal square root and, like this,
+       produces infinities or NaNs for a zero vector. */
+    f32 s = 1.0f / __builtin_sqrtf(vec1->x * vec1->x + vec1->y * vec1->y + vec1->z * vec1->z);
+    dst->x = vec1->x * s;
+    dst->y = vec1->y * s;
+    dst->z = vec1->z * s;
+}
+
+@@ src/RVL_SDK/mtx/vec.c PSVECMag
+f32 PSVECMag(const Vec* v) {
+    f32 sq = v->x * v->x + v->y * v->y + v->z * v->z;
+    return sq > 0.0f ? __builtin_sqrtf(sq) : 0.0f;
+}
+
+@@ src/RVL_SDK/mtx/vec.c PSVECDotProduct
+f32 PSVECDotProduct(const Vec* vec1, const Vec* vec2) {
+    return vec1->x * vec2->x + vec1->y * vec2->y + vec1->z * vec2->z;
+}
+
+@@ src/RVL_SDK/mtx/vec.c PSVECCrossProduct
+void PSVECCrossProduct(const Vec* vec1, const Vec* vec2, Vec* dst) {
+    f32 x = vec1->y * vec2->z - vec1->z * vec2->y;
+    f32 y = vec1->z * vec2->x - vec1->x * vec2->z;
+    f32 z = vec1->x * vec2->y - vec1->y * vec2->x;
+    dst->x = x; dst->y = y; dst->z = z;
+}
+
+@@ src/RVL_SDK/mtx/vec.c PSVECSquareDistance
+f32 PSVECSquareDistance(const Vec* a, const Vec* b) {
+    f32 x = a->x - b->x, y = a->y - b->y, z = a->z - b->z;
+    return x * x + y * y + z * z;
+}
+
+@@ src/RVL_SDK/mtx/mtxvec.c PSMTXMultVec
+void PSMTXMultVec(const Mtx m, const Vec* src, Vec* dst) {
+    f32 x = m[0][0] * src->x + m[0][1] * src->y + m[0][2] * src->z + m[0][3];
+    f32 y = m[1][0] * src->x + m[1][1] * src->y + m[1][2] * src->z + m[1][3];
+    f32 z = m[2][0] * src->x + m[2][1] * src->y + m[2][2] * src->z + m[2][3];
+    dst->x = x; dst->y = y; dst->z = z;
+}
+
+@@ src/RVL_SDK/mtx/mtxvec.c PSMTXMultVecArray
+void PSMTXMultVecArray(const Mtx m, const Vec* srcBase, Vec* dstBase, u32 count) {
+    u32 i;
+    for (i = 0; i < count; i++) {
+        PSMTXMultVec(m, &srcBase[i], &dstBase[i]);
+    }
+}
+
+@@ src/RVL_SDK/mtx/mtxvec.c PSMTXMultVecSR
+void PSMTXMultVecSR(const Mtx m, const Vec* src, Vec* dst) {
+    f32 x = m[0][0] * src->x + m[0][1] * src->y + m[0][2] * src->z;
+    f32 y = m[1][0] * src->x + m[1][1] * src->y + m[1][2] * src->z;
+    f32 z = m[2][0] * src->x + m[2][1] * src->y + m[2][2] * src->z;
+    dst->x = x; dst->y = y; dst->z = z;
+}

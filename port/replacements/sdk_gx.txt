@@ -1,0 +1,92 @@
+# GX on the port (tools/port_replace.py): matrix and projection loads written through
+# the port's command pipe (port_gx_pipe.h) instead of paired-single stores to 0xCC008000.
+# The `dest` arguments named that pipe and are unused here.
+
+@@ src/RVL_SDK/gx/GXTransform.c WriteProjPS
+static void WriteProjPS(const f32 proj[6], volatile void* dest) {
+    int i;
+    (void)dest;
+    for (i = 0; i < 6; i++) {
+        PORTGXWrite_f32(proj[i]);
+    }
+}
+
+@@ src/RVL_SDK/gx/GXTransform.c Copy6Floats
+static void Copy6Floats(const f32 src[6], f32 dst[6]) {
+    int i;
+    for (i = 0; i < 6; i++) {
+        dst[i] = src[i];
+    }
+}
+
+@@ src/RVL_SDK/gx/GXTransform.c WriteMTXPS3x3from3x4
+static void WriteMTXPS3x3from3x4(void* mtx, volatile void* dest) {
+    /* The 3x3 part of a 3x4 matrix, row by row. */
+    const f32* m = (const f32*)mtx;
+    int r;
+    (void)dest;
+    for (r = 0; r < 3; r++) {
+        PORTGXWrite_f32(m[r * 4 + 0]);
+        PORTGXWrite_f32(m[r * 4 + 1]);
+        PORTGXWrite_f32(m[r * 4 + 2]);
+    }
+}
+
+@@ src/RVL_SDK/gx/GXTransform.c WriteMTXPS4x3
+static void WriteMTXPS4x3(const f32 src[3][4], volatile void* dst) {
+    int r, c;
+    (void)dst;
+    for (r = 0; r < 3; r++) {
+        for (c = 0; c < 4; c++) {
+            PORTGXWrite_f32(src[r][c]);
+        }
+    }
+}
+
+@@ src/RVL_SDK/gx/GXTransform.c WriteMTXPS4x2
+static void WriteMTXPS4x2(const f32 mtx[3][4], volatile void* dest) {
+    /* The first two rows: texture matrices with two outputs. */
+    int r, c;
+    (void)dest;
+    for (r = 0; r < 2; r++) {
+        for (c = 0; c < 4; c++) {
+            PORTGXWrite_f32(mtx[r][c]);
+        }
+    }
+}
+
+@@ src/RVL_SDK/gx/GXDisplayList.c GXCallDisplayList
+void GXCallDisplayList(const void* list, u32 nbytes) {
+    if (gx->dirtyState) {
+        __GXSetDirtyState();
+    }
+    if (!(*(u32*)(&gx->vNumNot))) {
+        __GXSendFlushPrim();
+    }
+    GX_WRITE_U8(0x40);
+    GX_WRITE_U32(PortAddr(list)); /* a 32-bit game address the decoder resolves */
+    GX_WRITE_U32(nbytes);
+}
+
+@@ src/RVL_SDK/gx/GXMisc.c GXPeekARGB
+void GXPeekARGB(u16 x, u16 y, u32* color) {
+    /* Reads the embedded framebuffer; port/gx answers from the renderer. */
+    extern u32 PORTGXPeekARGB(u16 x, u16 y);
+    *color = PORTGXPeekARGB(x, y);
+}
+
+@@ src/RVL_SDK/gx/GXMisc.c GXPeekZ
+void GXPeekZ(u16 x, u16 y, u32* z) {
+    extern u32 PORTGXPeekZ(u16 x, u16 y);
+    *z = PORTGXPeekZ(x, y);
+}
+
+@@ src/RVL_SDK/gx/GXInit.c EnableWriteGatherPipe
+static void EnableWriteGatherPipe(void) {
+    /* No write-gather hardware on the port: commands go through port_gx_pipe.h. */
+}
+
+@@ src/RVL_SDK/gx/GXMisc.c GXResetWriteGatherPipe
+void GXResetWriteGatherPipe(void) {
+    /* No write-gather hardware on the port: nothing is buffered outside the pipe. */
+}

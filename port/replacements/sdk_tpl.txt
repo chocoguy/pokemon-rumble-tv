@@ -1,0 +1,61 @@
+# TPL texture palettes on the port (tools/port_replace.py). Every pointer in a palette is
+# a 4-byte slot that holds an offset from the palette until TPLBind resolves it to a
+# 32-bit game address (port_addr.h). This file is C, so the slots are plain u32 here.
+
+@@ src/RVL_SDK/tpl/TPL.c TPLBind
+static u32 TPLResolve(u32 offset, const void* pal) {
+    return PortAddr((const u8*)pal + offset);
+}
+
+void TPLBind(TPLPalettePtr pal) {
+    u16 i;
+    TPLDescriptorPtr descs;
+
+    if (pal->versionNumber != 2142000) {
+        OSPanic(__FILE__, 25, "invalid version number for texture palette");
+    }
+
+    pal->descriptorArray = TPLResolve(pal->descriptorArray, pal);
+    descs = (TPLDescriptorPtr)PortPtrRaw(pal->descriptorArray);
+
+    for (i = 0; i < pal->numDescriptors; i++) {
+        if (descs[i].textureHeader) {
+            TPLHeaderPtr header;
+            descs[i].textureHeader = TPLResolve(descs[i].textureHeader, pal);
+            header = (TPLHeaderPtr)PortPtrRaw(descs[i].textureHeader);
+            if (!header->unpacked) {
+                header->data = TPLResolve(header->data, pal);
+                header->unpacked = TRUE;
+            }
+        }
+
+        if (descs[i].CLUTHeader) {
+            TPLClutHeaderPtr clut;
+            descs[i].CLUTHeader = TPLResolve(descs[i].CLUTHeader, pal);
+            clut = (TPLClutHeaderPtr)PortPtrRaw(descs[i].CLUTHeader);
+            if (!clut->unpacked) {
+                clut->data = TPLResolve(clut->data, pal);
+                clut->unpacked = TRUE;
+            }
+        }
+    }
+}
+
+@@ src/RVL_SDK/tpl/TPL.c TPLGet
+TPLDescriptorPtr TPLGet(TPLPalettePtr pal, u32 id) {
+    id %= pal->numDescriptors;
+    return &((TPLDescriptorPtr)PortPtrRaw(pal->descriptorArray))[id];
+}
+
+@@ src/RVL_SDK/tpl/TPL.c TPLGetGXTexObjFromPalette
+void TPLGetGXTexObjFromPalette(TPLPalettePtr pal, GXTexObj* texObj, u32 id) {
+    TPLDescriptorPtr desc = TPLGet(pal, id);
+    TPLHeaderPtr header = (TPLHeaderPtr)PortPtrRaw(desc->textureHeader);
+    GXBool mipmap = header->minLOD != header->maxLOD ? GX_TRUE : GX_FALSE;
+
+    GXInitTexObj(texObj, PortPtrRaw(header->data), header->width, header->height, (GXTexFmt)header->format,
+                 header->wrapS, header->wrapT, mipmap);
+
+    GXInitTexObjLOD(texObj, header->minFilter, header->magFilter, header->minLOD, header->maxLOD, header->LODBias,
+                    GX_FALSE, header->edgeLODEnable, GX_ANISO_1);
+}

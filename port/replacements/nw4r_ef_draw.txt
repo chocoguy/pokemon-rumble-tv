@@ -1,0 +1,32 @@
+# C version of ef's billboard quad builder (tools/port_replace.py).
+
+@@ src/nw4r/ef/ef_drawbillboardstrategy.cpp CalcNormalPolygon
+static inline void CalcNormalPolygon(math::VEC3* pVtx, const Particle* pParticle, const math::MTX34* pMtx,
+                                     const math::VEC2* pPivot, f32 vx, f32 vy, f32 rc, f32 rs, f32 sx, f32 sy) {
+    // The particle's position through pMtx, as the paired-single original sums it.
+    const math::VEC3& p = pParticle->mParameter.mPosition;
+    const math::MTX34& m = *pMtx;
+    const f32 tx = __builtin_fmaf(m._02, p.z, m._00 * p.x) + (m._03 + m._01 * p.y);
+    const f32 ty = __builtin_fmaf(m._12, p.z, m._10 * p.x) + (m._13 + m._11 * p.y);
+    const f32 tz = __builtin_fmaf(m._22, p.z, m._20 * p.x) + (m._23 + m._21 * p.y);
+
+    // Half-extent vectors along the rotated x and y axes.
+    const f32 ux = rc * vx, uy = rs * vx;     // x axis * vx
+    const f32 wx = rs * vy, wy = -(rc * vy);  // y axis * vy
+
+    // Centre: the position moved so that scaling happens about the pivot.
+    const f32 ox = __builtin_fmaf(-sx, pPivot->x, pPivot->x);
+    const f32 oy = __builtin_fmaf(-sy, pPivot->y, pPivot->y);
+    const f32 cx = __builtin_fmaf(wx, oy, __builtin_fmaf(ux, ox, tx));
+    const f32 cy = __builtin_fmaf(wy, oy, __builtin_fmaf(uy, ox, ty));
+
+    const f32 ax = ux * sx, ay = uy * sx;  // scaled x half-extent
+    const f32 bx = wx * sy, by = wy * sy;  // scaled y half-extent
+    const f32 sumx = ax + bx, sumy = ay + by;
+    const f32 difx = ax + -bx, dify = ay + -by;
+
+    pVtx[0].x = cx - difx; pVtx[0].y = cy - dify; pVtx[0].z = tz;
+    pVtx[1].x = cx - sumx; pVtx[1].y = cy - sumy; pVtx[1].z = tz;
+    pVtx[2].x = cx + difx; pVtx[2].y = cy + dify; pVtx[2].z = tz;
+    pVtx[3].x = cx + sumx; pVtx[3].y = cy + sumy; pVtx[3].z = tz;
+}

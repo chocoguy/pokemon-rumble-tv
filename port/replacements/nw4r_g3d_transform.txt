@@ -1,0 +1,79 @@
+# C versions of g3d's matrix inversions (tools/port_replace.py). All three compute the
+# inverse of pW's 3x3 part by cofactors and treat |det| < sEpsilon (or NaN) as singular.
+
+@@ src/nw4r/g3d/g3d_transform.cpp CalcViewNrmMtx
+// Cofactors of pW's 3x3 part arranged as the inverse transpose (multiply by 1 / det).
+static f32 Det3x3Cofactors(const math::MTX34* pW, f32 c[3][3]) {
+    c[0][0] = pW->_11 * pW->_22 - pW->_12 * pW->_21;
+    c[0][1] = pW->_12 * pW->_20 - pW->_10 * pW->_22;
+    c[0][2] = pW->_10 * pW->_21 - pW->_11 * pW->_20;
+    c[1][0] = pW->_02 * pW->_21 - pW->_01 * pW->_22;
+    c[1][1] = pW->_00 * pW->_22 - pW->_02 * pW->_20;
+    c[1][2] = pW->_01 * pW->_20 - pW->_00 * pW->_21;
+    c[2][0] = pW->_01 * pW->_12 - pW->_02 * pW->_11;
+    c[2][1] = pW->_02 * pW->_10 - pW->_00 * pW->_12;
+    c[2][2] = pW->_00 * pW->_11 - pW->_01 * pW->_10;
+    return pW->_00 * c[0][0] + pW->_01 * c[0][1] + pW->_02 * c[0][2];
+}
+
+static bool IsInvertible(f32 det) {
+    return __builtin_fabsf(det) >= sEpsilon;
+}
+
+bool CalcViewNrmMtx(math::MTX33* pOut, const math::MTX34* pW) {
+    // Normal matrix: the inverse transpose, or pW's 3x3 part unchanged when singular.
+    f32 c[3][3];
+    const f32 det = Det3x3Cofactors(pW, c);
+    if (!IsInvertible(det)) {
+        pOut->_00 = pW->_00; pOut->_01 = pW->_01; pOut->_02 = pW->_02;
+        pOut->_10 = pW->_10; pOut->_11 = pW->_11; pOut->_12 = pW->_12;
+        pOut->_20 = pW->_20; pOut->_21 = pW->_21; pOut->_22 = pW->_22;
+        return false;
+    }
+    const f32 inv = 1.0f / det;
+    pOut->_00 = c[0][0] * inv; pOut->_01 = c[0][1] * inv; pOut->_02 = c[0][2] * inv;
+    pOut->_10 = c[1][0] * inv; pOut->_11 = c[1][1] * inv; pOut->_12 = c[1][2] * inv;
+    pOut->_20 = c[2][0] * inv; pOut->_21 = c[2][1] * inv; pOut->_22 = c[2][2] * inv;
+    return true;
+}
+
+@@ src/nw4r/g3d/g3d_transform.cpp CalcViewTexMtx
+bool CalcViewTexMtx(math::MTX34* pOut, const math::MTX34* pW) {
+    // As CalcViewNrmMtx, into a 3x4 with zero translation. When singular and pOut is
+    // pW, the matrix is left exactly as it was.
+    f32 c[3][3];
+    const f32 det = Det3x3Cofactors(pW, c);
+    if (!IsInvertible(det)) {
+        if (pOut != pW) {
+            pOut->_00 = pW->_00; pOut->_01 = pW->_01; pOut->_02 = pW->_02; pOut->_03 = 0.0f;
+            pOut->_10 = pW->_10; pOut->_11 = pW->_11; pOut->_12 = pW->_12; pOut->_13 = 0.0f;
+            pOut->_20 = pW->_20; pOut->_21 = pW->_21; pOut->_22 = pW->_22; pOut->_23 = 0.0f;
+        }
+        return false;
+    }
+    const f32 inv = 1.0f / det;
+    pOut->_00 = c[0][0] * inv; pOut->_01 = c[0][1] * inv; pOut->_02 = c[0][2] * inv; pOut->_03 = 0.0f;
+    pOut->_10 = c[1][0] * inv; pOut->_11 = c[1][1] * inv; pOut->_12 = c[1][2] * inv; pOut->_13 = 0.0f;
+    pOut->_20 = c[2][0] * inv; pOut->_21 = c[2][1] * inv; pOut->_22 = c[2][2] * inv; pOut->_23 = 0.0f;
+    return true;
+}
+
+@@ src/nw4r/g3d/g3d_transform.cpp CalcInvWorldMtx
+bool CalcInvWorldMtx(math::MTX34* pOut, const math::MTX34* pW) {
+    // Full inverse of the 3x4 matrix; pOut is untouched when singular.
+    f32 c[3][3];
+    const f32 det = Det3x3Cofactors(pW, c);
+    if (!IsInvertible(det)) {
+        return false;
+    }
+    const f32 inv = 1.0f / det;
+    const f32 t0 = pW->_03, t1 = pW->_13, t2 = pW->_23;
+    // The inverse is the transpose of the cofactor matrix over det.
+    const f32 i00 = c[0][0] * inv, i01 = c[1][0] * inv, i02 = c[2][0] * inv;
+    const f32 i10 = c[0][1] * inv, i11 = c[1][1] * inv, i12 = c[2][1] * inv;
+    const f32 i20 = c[0][2] * inv, i21 = c[1][2] * inv, i22 = c[2][2] * inv;
+    pOut->_00 = i00; pOut->_01 = i01; pOut->_02 = i02; pOut->_03 = -(i00 * t0 + i01 * t1 + i02 * t2);
+    pOut->_10 = i10; pOut->_11 = i11; pOut->_12 = i12; pOut->_13 = -(i10 * t0 + i11 * t1 + i12 * t2);
+    pOut->_20 = i20; pOut->_21 = i21; pOut->_22 = i22; pOut->_23 = -(i20 * t0 + i21 * t1 + i22 * t2);
+    return true;
+}

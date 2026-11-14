@@ -1,0 +1,37 @@
+# Compiler flags for every unit compiled from the fork, shared by CMakeLists.txt and the
+# tools in tools/. One flag per line; `c:` and `cxx:` lines apply to that language only.
+# Paths are relative to the repository root.
+
+# The Wii's data model where it matters: 16-bit wchar_t (the game's text is UTF-16),
+# signed char, wrapping integer overflow and no fused multiply-add unless written out.
+-fshort-wchar
+-fsigned-char
+-fwrapv
+-fno-strict-aliasing
+-ffp-contract=off
+-DPORT=1
+-DNW4R_LITTLE_ENDIAN=1
+-DNDEBUG=1
+-include
+port/include/port_prefix.h
+-Iport/include
+-Ipokemon-rumble-decomp-tv/include
+-Ibuild/generated/include
+
+# The decomp is not warning-clean and was never meant to be; these stay errors because on
+# a 64-bit host each one is a likely bug.
+-Wno-everything
+-Werror=implicit-function-declaration
+-Werror=implicit-int
+-Werror=int-to-pointer-cast
+-Werror=int-to-void-pointer-cast
+-Werror=pointer-to-int-cast
+
+c: -std=gnu99
+# The reconstructed Metrowerks C++ library replaces the host's; CodeWarrior parsed
+# template bodies at instantiation, hence -fdelayed-template-parsing.
+cxx: -std=gnu++03
+cxx: -nostdinc++
+cxx: -fexceptions
+cxx: -frtti
+cxx: -fdelayed-template-parsing
