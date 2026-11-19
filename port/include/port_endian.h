@@ -37,6 +37,13 @@ static inline void PortSwap32Array(void* p, size_t count) {
         PortSwap32(b + i * 4);
     }
 }
+static inline void PortSwap16Array(void* p, size_t count) {
+    uint8_t* b = (uint8_t*)p;
+    size_t i;
+    for (i = 0; i < count; i++) {
+        PortSwap16(b + i * 2);
+    }
+}
 
 /* U8 archive (.arc, content files): header and file system table. `size` is how many
  * bytes of the archive are in memory (at least through the end of the table). Returns 0
@@ -59,6 +66,22 @@ int PortFixupBREFT(void* file);
 
 /* NW4R sound archive: header, SYMB and INFO (port/endian/port_brsar.cpp). */
 int PortFixupBRSAR(void* file);
+/* .brseq (port_brseq.c): sequence header, DATA and LABL blocks. */
+int PortFixupBRSEQ(void* file);
+/* The sound archive's wave sounds, banks, wave archives and waves (port_brsnd.cpp). */
+int PortFixupRWSD(void* file);
+int PortFixupRBNK(void* file);
+int PortFixupRWAR(void* file);
+int PortFixupRWAV(void* file);
+
+/* NW4R g3d resources: models, textures, animations (.brres, port_brres.cpp). */
+int PortFixupBRRES(void* file);
+
+/* The game's compiled scripts (.pkc, port_pkc.c). */
+int PortFixupPKC(void* file, size_t size);
+
+/* The stages' collision trees (.bsp, port_bsp.c). */
+int PortFixupBSP(void* file, size_t size);
 
 /* rumble --check-assets (port/endian/port_asset_check.c): every content file through its
  * fixup. Returns 0 when all converted formats pass. */

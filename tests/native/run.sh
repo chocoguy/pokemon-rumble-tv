@@ -32,6 +32,10 @@ done
 xcrun clang $flags -std=gnu99 -w -o "$out/test_msl_wide" "$root/tests/native/test_msl_wide.c" $msl "$out/port_addr.o"
 "$out/test_msl_wide" || status=1
 
+xcrun clang $flags -std=gnu99 -w -o "$out/test_gx_texture" "$root/tests/native/test_gx_texture.c" \
+    "$root/tests/native/gx_texture_shim.c" "$root/port/gx/port_gx_texture.c" "$out/port_addr.o"
+"$out/test_gx_texture" || status=1
+
 # Layout of structs overlaid on file data (compile-time only).
 xcrun clang++ $flags -x c++ -std=gnu++03 -nostdinc++ -fdelayed-template-parsing -w -fsyntax-only "$root/tests/compile/layout_checks.cpp" \
     && echo "layout_checks.cpp: ok" || status=1

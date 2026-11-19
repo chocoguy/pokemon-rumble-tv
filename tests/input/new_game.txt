@@ -1,0 +1,49 @@
+# Starts a new game from an empty NAND and reaches the hub (the Terminal): button 2
+# (confirm, the remote held sideways) every two seconds from the title screen on, which
+# picks New Game, confirms, and pages through the intro story. Frames are retraces; the
+# headless runner's fast mode makes a run repeat exactly.
+#
+# retrace  buttons  [frames held, default 6]
+1900 2
+2020 2
+2140 2
+2260 2
+2380 2
+2500 2
+2620 2
+2740 2
+2860 2
+2980 2
+3100 2
+3220 2
+3340 2
+3460 2
+3580 2
+3700 2
+3820 2
+3940 2
+4060 2
+4180 2
+4300 2
+4420 2
+4540 2
+4660 2
+4780 2
+4900 2
+5020 2
+5140 2
+5260 2
+5380 2
+5500 2
+5620 2
+5740 2
+5860 2
+5980 2
+6100 2
+6220 2
+6340 2
+6460 2
+6580 2
+6700 2
+6820 2
+6940 2

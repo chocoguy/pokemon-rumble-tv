@@ -1,15 +1,17 @@
 #!/bin/sh
-# Phase 2 check: boots the game headless for a number of video frames from an empty NAND
-# and fails on a non-zero exit, any [RED] line, a sanitizer report or a GX stream error.
+# Boots the game headless for a number of video frames from an empty NAND and fails on a
+# non-zero exit, any [RED] line, a sanitizer report or a GX stream error. Further
+# arguments go to rumble (a --dump-frame, say).
 #
-#   tests/headless/boot.sh <rumble binary> <frames> <scratch dir>
+#   tests/headless/boot.sh <rumble binary> <frames> <scratch dir> [rumble arguments]
 set -u
 rumble=$1
 frames=$2
 scratch=$3
+shift 3
 rm -rf "$scratch"
 mkdir -p "$scratch"
-"$rumble" --frames "$frames" --nand "$scratch/nand" >"$scratch/stdout.txt" 2>"$scratch/stderr.txt"
+"$rumble" --frames "$frames" --nand "$scratch/nand" "$@" >"$scratch/stdout.txt" 2>"$scratch/stderr.txt"
 status=$?
 grep -E '^\[port\]' "$scratch/stderr.txt"
 fail=0

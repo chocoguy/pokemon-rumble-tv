@@ -148,7 +148,13 @@ static OSSwitchThreadCallback SwitchThreadCallback = DefaultSwitchThreadCallback
 
 static uint64_t sHostStart;
 static mach_timebase_info_data_t sTimebase;
-static volatile OSTime sSkipped; /* ticks skipped by the idle loop in fast mode */
+/* Fast mode runs on a virtual clock instead of the host's: it moves only when no thread
+ * is ready (straight to the next event) and by FAST_READ_STEP each time the game reads
+ * the time, so polling loops still advance. Work therefore takes no game time, like an
+ * infinitely fast console: a slow host frame (a shader compile, say) cannot make the game
+ * skip frames or starve its controller sampling, and a scripted run repeats exactly. */
+static volatile OSTime sVirtual;
+#define FAST_READ_STEP 61 /* about 1 microsecond */
 
 static uint64_t HostNanos(void) {
     uint64_t t = mach_absolute_time() - sHostStart;
@@ -156,8 +162,19 @@ static uint64_t HostNanos(void) {
 }
 
 OSTime PortNow(void) {
+    if (gPortConfig.fastTime) {
+        return __atomic_load_n(&sVirtual, __ATOMIC_SEQ_CST);
+    }
     /* OS_TIMER_CLOCK is 60.75 MHz: 243 ticks every 4000 ns. */
-    return (OSTime)(HostNanos() * 243 / 4000) + sSkipped;
+    return (OSTime)(HostNanos() * 243 / 4000);
+}
+
+/* A read of the clock by the game. */
+static OSTime GameNow(void) {
+    if (gPortConfig.fastTime) {
+        return __atomic_add_fetch(&sVirtual, FAST_READ_STEP, __ATOMIC_SEQ_CST);
+    }
+    return PortNow();
 }
 
 static uint64_t TicksToNanos(OSTime ticks) {
@@ -166,12 +183,12 @@ static uint64_t TicksToNanos(OSTime ticks) {
 
 OSTime OSGetTime(void) {
     PortSafePoint();
-    return PortNow();
+    return GameNow();
 }
 
 OSTick OSGetTick(void) {
     PortSafePoint();
-    return (OSTick)PortNow();
+    return (OSTick)GameNow();
 }
 
 OSTime __OSGetSystemTime(void) {
@@ -412,7 +429,7 @@ static void Idle(void) {
                     PortExit(3);
                 }
             } else if (gPortConfig.fastTime) {
-                sSkipped += next - now;
+                __atomic_store_n(&sVirtual, next, __ATOMIC_SEQ_CST);
             } else {
                 uint64_t waitNs = TicksToNanos(next - now);
                 struct timespec ts;
@@ -969,7 +986,10 @@ static void InsertAlarm(OSAlarm* alarm, OSTime fire, OSAlarmHandler handler) {
     if (0 < alarm->period) {
         OSTime time = __OSGetSystemTime();
         fire = alarm->start;
-        if (alarm->start < time) {
+        /* A periodic alarm re-armed at the instant it fired (alarm->fire == time) moves on
+         * a period: on the console time has always passed by then, on the fast-mode
+         * virtual clock it may not have. */
+        if (alarm->start < time || (alarm->start == time && alarm->fire == time)) {
             fire += alarm->period * ((time - alarm->start) / alarm->period + 1);
         }
     }

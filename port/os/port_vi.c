@@ -2,7 +2,7 @@
  * show, and the waits on retrace. The port always reports an NTSC progressive display, so
  * the game picks its 480p render mode (GXNtsc480Prog) with no deflicker filter.
  *
- * Phase 2 shows nothing; the renderer (phase 3) presents the frame buffer named here. */
+ * Each retrace hands the frame buffer the game shows to the renderer (port/gx). */
 #include <port_os.h>
 #include <revolution/os/OSThread.h>
 #include <revolution/vi.h>
@@ -28,6 +28,7 @@ static void Retrace(void) {
         sCurrentFrameBuffer = sNextFrameBuffer;
         sFlushPending = FALSE;
     }
+    PortGXRetrace(sRetraceCount, sCurrentFrameBuffer, sBlack);
     if (sPostRetrace != NULL) {
         sPostRetrace(sRetraceCount);
     }

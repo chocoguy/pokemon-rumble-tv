@@ -13,6 +13,7 @@
  *   0x0E000000         locked cache, 16 KB
  *   0x10000000-        MEM2 arena, 64 MB (the console's MEM2 is at physical 0x10000000)
  *   0x20000000-        host stacks of game threads
+ *   0x30000000-        the game's C heap: malloc and operator new (port_heap.c), 192 MB
  */
 #include <port_os.h>
 #include <port_addr.h>
@@ -35,6 +36,8 @@
 #define MEM2_SIZE 0x04000000u
 #define OFF_STACKS 0x20000000u
 #define STACKS_SIZE 0x10000000u
+#define OFF_GAME_HEAP 0x30000000u
+#define GAME_HEAP_SIZE 0x0C000000u
 
 #if __has_feature(address_sanitizer)
 #define HOST_STACK_SIZE 0x400000u /* ASan frames are several times larger */
@@ -73,7 +76,7 @@ void PortMemInit(void) {
     uintptr_t arrayEnd = arrayStart + sizeof(sWindow);
 
     gPortAddrBase = base;
-    if (arrayStart - base > OFF_MEM1 || arrayEnd - base < OFF_STACKS + STACKS_SIZE ||
+    if (arrayStart - base > OFF_MEM1 || arrayEnd - base < OFF_GAME_HEAP + GAME_HEAP_SIZE ||
         arrayEnd - base > PORT_ADDR_WINDOW_SIZE) {
         PortFatal("address window layout: image %p, window array at offset 0x%lx..0x%lx", (void*)base,
                   (unsigned long)(arrayStart - base), (unsigned long)(arrayEnd - base));
@@ -83,6 +86,14 @@ void PortMemInit(void) {
     sMEM1ArenaHi = At(OFF_MEM1 + MEM1_SIZE);
     sMEM2ArenaLo = At(OFF_MEM2);
     sMEM2ArenaHi = At(OFF_MEM2 + MEM2_SIZE);
+}
+
+/* The C heap's region. Computed from the image alone, so it is usable before
+ * PortMemInit (static constructors allocate). */
+void PortGameHeapRegion(unsigned char** start, unsigned char** end) {
+    uintptr_t base = (uintptr_t)&_mh_execute_header;
+    *start = (unsigned char*)(base + OFF_GAME_HEAP);
+    *end = (unsigned char*)(base + OFF_GAME_HEAP + GAME_HEAP_SIZE);
 }
 
 /* ------------------------------------------------------------------------------------ */

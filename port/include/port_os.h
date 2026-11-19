@@ -69,6 +69,13 @@ void PortSafePoint(void);
 
 /* Memory window (port_mem.c). */
 void PortMemInit(void);
+
+/* The game's C heap (port_heap.c): what the game's malloc/free and operator new/delete
+ * use, so everything the game allocates has a 32-bit game address. Blocks are 16-byte
+ * aligned. Thread-safe from any thread, usable before PortOSStart. */
+void* PortGameAlloc(size_t size);
+void PortGameFree(void* p);
+void PortGameHeapRegion(unsigned char** start, unsigned char** end);
 void* PortAllocStack(unsigned int size, unsigned int* outSize);
 void PortFreeStack(void* base);
 
@@ -79,6 +86,21 @@ void PortNoteFramePresented(void);
 /* Subsystem hooks for the summary printed at exit. */
 typedef void (*PortSummaryFunc)(void);
 void PortAddSummary(PortSummaryFunc func);
+
+/* The renderer (port/gx). PortGXStart starts the GPU backend at an EFB scale (call before
+ * PortOSStart; without it the command stream is only checked). PortGXRetrace shows the
+ * display copy at `frameBuffer` (VI's current frame buffer) and writes any frame dump
+ * requested for this retrace with PortGXRequestDump. */
+int PortGXStart(int scale);
+void PortGXRetrace(unsigned int retrace, void* frameBuffer, int black);
+void PortGXRequestDump(unsigned int retrace, const char* path);
+/* Also writes every Nth retrace's display to DIR/frame-NNNNN.png (exploring a script). */
+void PortGXRequestDumpEvery(unsigned int every, const char* dir);
+
+/* Wii Remote buttons (port/pad/port_pad.c). The script is read once before PortOSStart;
+ * PortPadSetButtons holds WPAD_BUTTON_* bits until changed (the app shell). */
+int PortPadLoadScript(const char* path);
+void PortPadSetButtons(unsigned int buttons);
 
 #ifdef __cplusplus
 }

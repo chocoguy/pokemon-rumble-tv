@@ -1,6 +1,7 @@
 /* The headless runner (macOS): runs the game with no window, no sound and no input.
  *
- *   rumble [--frames N] [--rom DIR] [--nand DIR] [--realtime]
+ *   rumble [--frames N] [--rom DIR] [--nand DIR] [--realtime] [--scale N] [--no-gpu]
+ *          [--dump-frame K PATH]... [--dump-every N DIR] [--input FILE]
  *   rumble --check-assets [--rom DIR]
  *
  * --frames N   stop after N video retraces (60 per second of game time)
@@ -8,6 +9,11 @@
  * --nand DIR   the folder standing in for the console's NAND, where saves go
  *              (default: build/nand in the repository)
  * --realtime   run at the console's speed instead of skipping idle time
+ * --scale N    render the EFB at N times the console's resolution (default 1)
+ * --no-gpu     draw nothing; the command stream is only checked
+ * --dump-frame K PATH  write what the display shows at retrace K as a PNG (repeatable)
+ * --dump-every N DIR  also write every Nth retrace as DIR/frame-K.png
+ * --input FILE  press the Wii Remote's buttons as the script says (port/pad/port_pad.c)
  * --check-assets  run every content file through its byte-order fixup and exit
  *
  * The exit status is 0 when the run reached its end without a fatal error. The summary
@@ -47,7 +53,8 @@ static void RepoPath(char* out, size_t size, const char* relative) {
 }
 
 static void Usage(void) {
-    fprintf(stderr, "usage: rumble [--frames N] [--rom DIR] [--nand DIR] [--realtime]\n"
+    fprintf(stderr, "usage: rumble [--frames N] [--rom DIR] [--nand DIR] [--realtime] [--scale N] [--no-gpu]\n"
+                    "              [--dump-frame K PATH]... [--dump-every N DIR] [--input FILE]\n"
                     "       rumble --check-assets [--rom DIR]\n");
     exit(2);
 }
@@ -56,6 +63,8 @@ int main(int argc, char** argv) {
     int i;
     struct stat st;
     int checkAssets = 0;
+    int gpu = 1;
+    int scale = 1;
 
     RepoPath(sRom, sizeof(sRom), "rom/content");
     RepoPath(sNand, sizeof(sNand), "build/nand");
@@ -70,6 +79,20 @@ int main(int argc, char** argv) {
             snprintf(sNand, sizeof(sNand), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--realtime") == 0) {
             gPortConfig.fastTime = 0;
+        } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+            scale = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--no-gpu") == 0) {
+            gpu = 0;
+        } else if (strcmp(argv[i], "--dump-frame") == 0 && i + 2 < argc) {
+            PortGXRequestDump((unsigned int)strtoul(argv[i + 1], NULL, 10), argv[i + 2]);
+            i += 2;
+        } else if (strcmp(argv[i], "--dump-every") == 0 && i + 2 < argc) {
+            PortGXRequestDumpEvery((unsigned int)strtoul(argv[i + 1], NULL, 10), argv[i + 2]);
+            i += 2;
+        } else if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
+            if (!PortPadLoadScript(argv[++i])) {
+                return 2;
+            }
         } else if (strcmp(argv[i], "--check-assets") == 0) {
             checkAssets = 1;
         } else if (strcmp(argv[i], "--headless") == 0) {
@@ -91,6 +114,9 @@ int main(int argc, char** argv) {
     PortLog("content %s, NAND %s, %s time%s", sRom, sNand, gPortConfig.fastTime ? "fast" : "real",
             gPortConfig.stopAfterRetraces ? "" : ", no frame limit");
 
+    if (gpu) {
+        PortGXStart(scale);
+    }
     PortOSStart(GameMain);
     return PortOSWaitForExit();
 }

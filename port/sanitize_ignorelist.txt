@@ -6,3 +6,8 @@
 [undefined]
 src:*/pokemon-rumble-decomp-tv/include/list
 src:*/pokemon-rumble-decomp-tv/include/MSL_CPP/detail/tree.h
+
+# NW4R effect animation curves pack their keys at odd offsets (as the console's loads
+# allowed); every read through them is unaligned on purpose.
+[alignment]
+src:*/pokemon-rumble-decomp-tv/src/nw4r/ef/ef_animcurve.cpp

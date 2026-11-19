@@ -8,6 +8,9 @@
  * recognise the file as converted and leave it byte for byte unchanged. Formats the port
  * does not convert yet are counted by extension.
  *
+ * PORT_EXTRACT=DIR (with PORT_EXTRACT_EXT=".brres,.bsp") also writes the unconverted
+ * files of those extensions to DIR, for studying a format.
+ *
  * Exit status: 0 when every converted format passed. */
 #include <port_endian.h>
 #include <port_os.h>
@@ -17,6 +20,16 @@
 #include <string.h>
 
 typedef int (*Fixup)(void* file);
+
+static uint32_t sCurrentSize; /* for the fixups that take the size */
+
+static int FixupPKC(void* file) {
+    return PortFixupPKC(file, sCurrentSize);
+}
+
+static int FixupBSP(void* file) {
+    return PortFixupBSP(file, sCurrentSize);
+}
 
 typedef struct Format {
     const char* extension;
@@ -28,7 +41,8 @@ typedef struct Format {
 static Format sFormats[] = {
     {".brlyt", PortFixupBRLYT, 0, 0}, {".brlan", PortFixupBRLAN, 0, 0}, {".tpl", PortFixupTPL, 0, 0},
     {".brfnt", PortFixupBRFNT, 0, 0}, {".bmg", PortFixupBMG, 0, 0},     {".breff", PortFixupBREFF, 0, 0},
-    {".breft", PortFixupBREFT, 0, 0}, {".brsar", PortFixupBRSAR, 0, 0},
+    {".breft", PortFixupBREFT, 0, 0}, {".brsar", PortFixupBRSAR, 0, 0}, {".pkc", FixupPKC, 0, 0},
+    {".brres", PortFixupBRRES, 0, 0}, {".bsp", FixupBSP, 0, 0},
 };
 
 typedef struct Other {
@@ -148,6 +162,32 @@ static int Decompress(const char* path, const uint8_t* data, uint32_t size, uint
     return 1;
 }
 
+static void Extract(const char* path, const char* extension, const uint8_t* data, uint32_t size) {
+    const char* dir = getenv("PORT_EXTRACT");
+    const char* wanted = getenv("PORT_EXTRACT_EXT");
+    char out[1024];
+    size_t n;
+    FILE* f;
+    const char* hit;
+    if (dir == NULL || wanted == NULL || (hit = strstr(wanted, extension)) == NULL) {
+        return;
+    }
+    n = strlen(extension);
+    if (hit[n] != '\0' && hit[n] != ',') {
+        return;
+    }
+    n = (size_t)snprintf(out, sizeof(out), "%s/", dir);
+    for (; *path != '\0' && n + 1 < sizeof(out); path++) {
+        out[n++] = (*path == '/' || *path == ':') ? '_' : *path;
+    }
+    out[n] = '\0';
+    f = fopen(out, "wb");
+    if (f != NULL) {
+        fwrite(data, 1, size, f);
+        fclose(f);
+    }
+}
+
 static void CheckFile(const char* path, uint8_t* data, uint32_t size) {
     const char* extension = Extension(path);
     size_t i;
@@ -187,6 +227,8 @@ static void CheckFile(const char* path, uint8_t* data, uint32_t size) {
         CheckArchive(path, data, size);
         return;
     }
+    Extract(path, extension, data, size);
+    sCurrentSize = size;
     for (i = 0; i < sizeof(sFormats) / sizeof(sFormats[0]); i++) {
         if (strcmp(extension, sFormats[i].extension) == 0) {
             uint8_t* copy;

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Generate link stubs for every symbol the port does not implement yet.
 
-    tools/gen_link_stubs.py --sdk macosx --out build/link_stubs.c lib1.a lib2.a ...
+    tools/gen_link_stubs.py --sdk macosx --out build/link_stubs.c [--provides lib.a] lib1.a lib2.a ...
 
 A symbol needs a stub when some object in the archives references it, no object defines
 it, and the platform's system libraries (read from the SDK's .tbd export lists) do not
-export it. Each stub:
+export it. Archives given with --provides (the platform layer, which links against system
+frameworks) only contribute the symbols they define. Each stub:
 
   - a function logs "[RED] unimplemented <name>" to stderr the first time it is called
     and returns 0;
@@ -82,6 +83,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sdk", default="macosx")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--provides", action="append", type=Path, default=[])
     parser.add_argument("archives", nargs="+", type=Path)
     args = parser.parse_args()
 
@@ -90,6 +92,7 @@ def main():
     tbds = [sdk / t for t in SYSTEM_TBDS] + sorted((sdk / "usr/lib/system").glob("*.tbd"))
     system = tbd_exports([t for t in tbds if t.exists()])
     defined, undefined = archive_symbols(args.archives)
+    defined |= archive_symbols(args.provides)[0]
     # The linker itself provides these.
     linker_provided = {"___dso_handle", "__mh_execute_header", "__mh_dylib_header"}
     # Sanitizer builds call into the sanitizer runtime, which the linker adds itself.

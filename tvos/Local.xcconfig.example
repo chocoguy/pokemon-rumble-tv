@@ -1,0 +1,7 @@
+// Copy to Local.xcconfig (tvos/tools/build.sh does it the first time) and fill in.
+// The app's bundle ID: keep it the same from build to build, or the saves kept under
+// the old one are out of reach.
+RUMBLE_BUNDLE_ID = com.example.rumble-tv
+// Your Apple Developer team's ID (ten characters), for builds that go on a TV.
+// The simulator needs none.
+DEVELOPMENT_TEAM =

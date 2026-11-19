@@ -3,3 +3,11 @@ build/
 __pycache__/
 *.pyc
 .DS_Store
+
+# tvOS app: generated project, local settings, build output
+tvos/RumbleTV.xcodeproj/
+tvos/Local.xcconfig
+tvos/build/
+
+# Local script: builds and installs on this machine's Apple TV
+/install_tv.sh
