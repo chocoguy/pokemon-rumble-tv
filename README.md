@@ -6,6 +6,20 @@ Status: phase 7 of the plan (the Apple TV app). The game is playable on the Mac 
 
 One deliberate change from the original: analog movement. The game walks at a fixed speed whenever the stick is pushed at all; the port patches the player's script as it loads (`port/script/port_script_patch.c`) so walking speed and the walk animation follow how far the stick is pushed (30% just past the dead zone up to the original speed at a full push), and the Pokémon turns toward the stick twice as fast. `PORT_NO_SCRIPT_PATCH=1` runs the original script.
 
+## Getting the source
+
+The decomp is a git submodule (the `chocoguy/pokemon-rumble-decomp-tv` fork), so clone with it:
+
+```bash
+git clone --recursive https://github.com/chocoguy/pokemon-rumble-tv.git
+```
+
+In an existing clone, fetch it with:
+
+```bash
+git submodule update --init
+```
+
 ## Game files
 
 Install your WAD in Dolphin (Tools > Install WAD), then run the import with Python 3.10 or newer (macOS's own `/usr/bin/python3` is 3.9, so use Homebrew's):
