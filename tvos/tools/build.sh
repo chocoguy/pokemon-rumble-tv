@@ -22,7 +22,7 @@ else
   libs="$root/build/tvos-sim"
   cmake -S "$root" -B "$libs" -G Ninja -DCMAKE_SYSTEM_NAME=tvOS -DCMAKE_OSX_SYSROOT=appletvsimulator
 fi
-cmake --build "$libs" --target rumble_fork rumble_port rumble_metal rumble_stubs
+cmake --build "$libs" --target rumble_fork rumble_port rumble_metal rumble_audio rumble_stubs
 xcodegen generate --quiet
 if [ "$1" = "device" ]; then
   dest="generic/platform=tvOS"

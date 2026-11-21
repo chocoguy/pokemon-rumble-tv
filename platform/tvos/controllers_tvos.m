@@ -7,7 +7,7 @@
  * Return and Escape of the Simulator) adds to channel 0.
  *
  * Gamepad, by label (the game shows the Classic Controller's letters):
- *   left stick, d-pad     move              A  a (confirm, first move)
+ *   left stick, d-pad     move (the stick by how far it is pushed)   A  a (confirm, first move)
  *   right stick           right stick       B  b (back, second move)
  *   L1 / R1  L / R        L2 / R2  ZL / ZR  X  x        Y  y
  *   Menu (≡)  +  (pause)  Options  -
@@ -19,6 +19,7 @@
 #include <string.h>
 #include <port_app.h>
 #include "controllers_tvos.h"
+#include "shell_tvos.h"
 
 #define CHANNELS 4
 
@@ -29,7 +30,7 @@ static GCController* sGamepads[CHANNELS];
 static int sLogged;
 
 static void Log(NSString* what, GCController* c, int chan) {
-    NSLog(@"rumble: controller %@ \"%@\" (%@) on channel %d", what, c.vendorName ?: @"?", c.productCategory, chan);
+    RumbleLog(@"controller %@ \"%@\" (%@) on channel %d", what, c.vendorName ?: @"?", c.productCategory, chan);
 }
 
 static int IsGamepad(GCController* c) {
@@ -54,7 +55,7 @@ static void Attach(GCController* c) {
             return;
         }
     }
-    NSLog(@"rumble: controller \"%@\" ignored: four players already", c.vendorName ?: @"?");
+    RumbleLog(@"controller \"%@\" ignored: four players already", c.vendorName ?: @"?");
 }
 
 static void Detach(GCController* c) {
@@ -80,11 +81,29 @@ static void Push(float* axis, float v) {
     }
 }
 
+/* A gamepad thumbstick as the game should see it. The Wii's KPAD clamped small pushes to
+ * zero, and the game starts walking at any stick length above zero, so a radial dead zone
+ * keeps a resting stick still; past it the push is rescaled linearly to 0..1. The patched
+ * player script (port/script/port_script_patch.c) turns that distance into walking speed. */
+static const float kStickDeadZone = 0.20f;
+
+static void ReadStick(GCControllerDirectionPad* stick, float* x, float* y) {
+    float vx = stick.xAxis.value;
+    float vy = stick.yAxis.value;
+    float length = sqrtf(vx * vx + vy * vy);
+    float scaled;
+    if (length <= kStickDeadZone) {
+        return;
+    }
+    scaled = (length - kStickDeadZone) / (1.0f - kStickDeadZone);
+    scaled = scaled > 1.0f ? 1.0f : scaled;
+    Push(x, vx / length * scaled);
+    Push(y, vy / length * scaled);
+}
+
 static void ReadGamepad(GCExtendedGamepad* g, PortClassicState* s) {
-    Push(&s->lx, g.leftThumbstick.xAxis.value);
-    Push(&s->ly, g.leftThumbstick.yAxis.value);
-    Push(&s->rx, g.rightThumbstick.xAxis.value);
-    Push(&s->ry, g.rightThumbstick.yAxis.value);
+    ReadStick(g.leftThumbstick, &s->lx, &s->ly);
+    ReadStick(g.rightThumbstick, &s->rx, &s->ry);
     Press(s, g.dpad.up.pressed, PORT_CL_UP);
     Press(s, g.dpad.down.pressed, PORT_CL_DOWN);
     Press(s, g.dpad.left.pressed, PORT_CL_LEFT);
@@ -157,7 +176,7 @@ void RumbleControllersStart(void) {
                   if (c.microGamepad != nil && !IsGamepad(c)) {
                       c.microGamepad.reportsAbsoluteDpadValues = YES;
                       c.microGamepad.allowsRotation = NO;
-                      NSLog(@"rumble: Siri Remote \"%@\" connected", c.vendorName ?: @"?");
+                      RumbleLog(@"Siri Remote \"%@\" connected", c.vendorName ?: @"?");
                   }
                   Attach(c);
                 }];
@@ -210,7 +229,7 @@ void RumbleControllersPoll(const PortClassicState* extra) {
     }
     if (!sLogged) {
         sLogged = 1;
-        NSLog(@"rumble: %lu controllers, keyboard %s", (unsigned long)GCController.controllers.count,
+        RumbleLog(@"%lu controllers, keyboard %s", (unsigned long)GCController.controllers.count,
               keyboard != nil ? "yes" : "no");
     }
     for (i = 0; i < CHANNELS; i++) {

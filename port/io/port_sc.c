@@ -4,6 +4,8 @@
 #include <revolution/sc.h>
 #include <revolution/dvd.h>
 #include <revolution/fa.h>
+#include <revolution/fa/pf_volume.h>
+#include <stdlib.h>
 
 void SCInit(void) {}
 
@@ -41,9 +43,26 @@ s32 DVDGetDriveStatus(void) {
     return DVD_STATE_END;
 }
 
-/* FA: the SD card library. No card is ever present: registration and initialisation
- * succeed, attaching a drive fails, so photo saving reports that there is no SD card. */
+/* FA: the SD card library. The slot is there and always empty: attaching the drive
+ * succeeds with no card present, so photo saving shows the game's own "An SD Card is not
+ * inserted." (an attach failure would show "An SD Card read error has occurred. Press
+ * RESET and try again."). The insert callback never fires; mounting and file calls fail. */
 #define FA_NO_CARD (-1)
+#define FA_DRIVE 'A'
+#define FA_STAT_ATTACHED 0x01 /* 0x10, card present, stays clear */
+
+typedef struct FaCompletion {
+    FACallback callback;
+    FACommandBlock* block;
+} FaCompletion;
+
+static void FaComplete(void* param) {
+    FaCompletion* c = (FaCompletion*)param;
+    FACallback callback = c->callback;
+    FACommandBlock* block = c->block;
+    free(c);
+    callback(0, block);
+}
 
 s32 FAInit(long config) {
     (void)config;
@@ -58,21 +77,29 @@ s32 FARegistCB(u8 device, FAMediaCallback inserted, FAMediaCallback ejected) {
 }
 
 s32 FAAttachAsync(u8 device, s8* nandPath, u32 nandSize, FADrvTbl* drivers, FACallback callback, FACommandBlock* block) {
+    FaCompletion* c;
     (void)device;
     (void)nandPath;
     (void)nandSize;
-    (void)drivers;
-    (void)callback;
-    (void)block;
-    return FA_NO_CARD;
+    if (drivers != NULL) {
+        drivers->drive = FA_DRIVE;
+        drivers->stat = FA_STAT_ATTACHED;
+    }
+    if (callback != NULL) {
+        c = (FaCompletion*)malloc(sizeof(*c));
+        c->callback = callback;
+        c->block = block;
+        PortPostCallback(FaComplete, c);
+    }
+    return 0;
 }
 
 s32 FADetach(s8 drive) {
     (void)drive;
-    return FA_NO_CARD;
+    return 0;
 }
 s32 FAErrnum(void) {
-    return FA_NO_CARD;
+    return 0;
 }
 s32 FAMountAsync(s8 drive, FACallback callback, FACommandBlock* block) {
     (void)drive;

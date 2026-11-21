@@ -1,0 +1,56 @@
+# Analog walking (port/script/port_script_patch.c): new_game_classic.txt's presses into the
+# hub, then the tutorial message dismissed and the left stick pushed part way: tests/headless/walk.sh
+# checks the player's step at each push against a full push.
+#
+# retrace  buttons  [frames held, default 6]
+1900 CL_A
+2020 CL_A
+2140 CL_A
+2260 CL_A
+2380 CL_A
+2500 CL_A
+2620 CL_A
+2740 CL_A
+2860 CL_A
+2980 CL_A
+3100 CL_A
+3220 CL_A
+3340 CL_A
+3460 CL_A
+3580 CL_A
+3700 CL_A
+3820 CL_A
+3940 CL_A
+4060 CL_A
+4180 CL_A
+4300 CL_A
+4420 CL_A
+4540 CL_A
+4660 CL_A
+4780 CL_A
+4900 CL_A
+5020 CL_A
+5140 CL_A
+5260 CL_A
+5380 CL_A
+5500 CL_A
+5620 CL_A
+5740 CL_A
+5860 CL_A
+5980 CL_A
+6100 CL_A
+6220 CL_A
+6340 CL_A
+6460 CL_A
+6580 CL_A
+6700 CL_A
+6820 CL_A
+6940 CL_A
+7300 CL_A
+7360 CL_A
+7420 CL_A
+7500 LS_DOWN 60
+7600 LS_LEFT@0.5 60
+7700 LS_RIGHT@0.25 60
+7800 LS_UP@0.75 40
+7900 CL_DOWN 40

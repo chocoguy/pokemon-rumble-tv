@@ -1,114 +1,206 @@
-/* AX and AI, silent (phase 2).
+/* AX and AI: the mixer's frame and the AX API NW4R calls.
  *
  * The console's DSP mixed a 3 ms audio frame (96 samples at 32 kHz) and raised the AI
- * DMA interrupt for the next one. Here a 3 ms timer plays that role: each frame it
- * advances every running voice through its sample data, as the DSP would, so one-shot
- * sounds end and streams ask for more data; it runs the aux (effect) callbacks on silent
- * buffers; then it calls the frame callback NW4R registered, which drives its sound
- * thread. Nothing is mixed or played: phase 5 replaces the advance with a real mixer.
+ * DMA interrupt for the next one. Here a 3 ms timer plays that role. Each frame it mixes
+ * every running voice (port_ax_mix.c) into the main and aux buses, hands each aux bus to
+ * its callback (NW4R's effects, the SDK's axfx compiled from the fork), adds the
+ * processed aux buses back at their return volumes, applies the master volume, and sends
+ * the 16-bit stereo result to the sink (port_audio.h: the AVAudioEngine output, a WAV
+ * file). Then it calls the frame callback NW4R registered, which drives its sound thread.
  *
  * Voice addresses are DSP addresses: ADPCM in nibbles, PCM16 in 16-bit words, PCM8 in
- * bytes. */
+ * bytes, all physical addresses in the game's window (port_addr.h). */
+#include <port_audio.h>
 #include <port_os.h>
-#include <revolution/ax.h>
 #include <revolution/ai.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-
-#define AX_FORMAT_ADPCM 0x00
-#define AX_FORMAT_PCM16 0x0A
-#define AX_FORMAT_PCM8 0x19
+#include "port_ax_internal.h"
 
 static AXVPB sVoices[AX_VOICE_MAX];
 static AXOutCallback sFrameCallback;
 static AIDCallback sDmaCallback;
 static AXAuxCallback sAuxCallback[3];
 static void* sAuxContext[3];
-static u16 sAuxReturnVolume[3];
+static u16 sAuxReturnVolume[3] = {AX_MAX_VOLUME, AX_MAX_VOLUME, AX_MAX_VOLUME};
 static u16 sMasterVolume = AX_MAX_VOLUME;
 static u32 sMode;
 static u32 sMaxDspCycles;
 static int sInitialized;
 static unsigned long long sFrames;
+static unsigned long long sClippedSamples;
+static int sMostVoices;
 
-/* Silent buffers for the aux callbacks: left, right, surround. */
-static s32 sAuxBuffers[3][3][AX_SAMPLES_PER_FRAME];
+static PortAXBuses sBuses;
+static s16 sOut[AX_SAMPLES_PER_FRAME * 2];
 
-static u32 Addr(u16 hi, u16 lo) {
-    return ((u32)hi << 16) | lo;
+static PortAudioSink sSink;
+static void* sSinkContext;
+static FILE* sWav;
+static unsigned long long sWavFrames;
+
+void PortAudioSetSink(PortAudioSink sink, void* context) {
+    sSink = sink;
+    sSinkContext = context;
 }
 
-static void AdvanceVoice(AXVPB* vpb) {
-    AXPB* pb = &vpb->pb;
-    u32 ratio = ((u32)pb->src.ratioHi << 16) | pb->src.ratioLo;
-    u32 frac = pb->src.currentAddressFrac;
-    u64 samples = (u64)ratio * AX_SAMPLES_PER_FRAME + frac;
-    u32 step = (u32)(samples >> 16);
-    u32 current = Addr(pb->addr.currentAddressHi, pb->addr.currentAddressLo);
-    u32 end = Addr(pb->addr.endAddressHi, pb->addr.endAddressLo);
-    u32 loop = Addr(pb->addr.loopAddressHi, pb->addr.loopAddressLo);
-    u32 next;
+static void PutLE32(u8* p, u32 v) {
+    p[0] = (u8)v;
+    p[1] = (u8)(v >> 8);
+    p[2] = (u8)(v >> 16);
+    p[3] = (u8)(v >> 24);
+}
 
-    if (pb->src.ratioHi == 0 && pb->src.ratioLo == 0 && pb->srcSelect != 2) {
-        step = AX_SAMPLES_PER_FRAME; /* no rate set yet: treat as 1:1 */
+/* The 44-byte header of a 16-bit stereo PCM WAV holding `frames` frames. */
+static void WavHeader(u8* h, unsigned long long frames) {
+    u32 bytes = (u32)(frames * 4 > 0xFFFFFFD3ull ? 0xFFFFFFD3ull : frames * 4);
+    memcpy(h, "RIFF", 4);
+    PutLE32(h + 4, 36 + bytes);
+    memcpy(h + 8, "WAVEfmt ", 8);
+    PutLE32(h + 16, 16);
+    PutLE32(h + 20, 1 | (2 << 16)); /* PCM, two channels */
+    PutLE32(h + 24, PORT_AUDIO_RATE);
+    PutLE32(h + 28, PORT_AUDIO_RATE * 4);
+    PutLE32(h + 32, 4 | (16 << 16)); /* block align, bits per sample */
+    memcpy(h + 36, "data", 4);
+    PutLE32(h + 40, bytes);
+}
+
+static void FinishWav(void) {
+    u8 header[44];
+    if (sWav == NULL) {
+        return;
     }
-    pb->src.currentAddressFrac = (u16)samples;
-    if (pb->addr.format == AX_FORMAT_ADPCM) {
-        /* 14 samples per 8-byte frame, whose first byte is a header (2 nibbles). */
-        u32 position = current & 15;
-        u32 nibbles = 0;
-        while (step > 0) {
-            if (position < 2) {
-                nibbles += 2 - position;
-                position = 2;
-            }
-            {
-                u32 room = 16 - position;
-                u32 take = step < room ? step : room;
-                nibbles += take;
-                position += take;
-                step -= take;
-            }
-            if (position == 16) {
-                position = 0;
-            }
+    WavHeader(header, sWavFrames);
+    fseek(sWav, 0, SEEK_SET);
+    fwrite(header, 1, sizeof(header), sWav);
+    fclose(sWav);
+    sWav = NULL;
+    PortLog("AX: wrote %.1f s of sound", (double)sWavFrames / PORT_AUDIO_RATE);
+}
+
+int PortAudioWriteWav(const char* path) {
+    u8 header[44];
+    sWav = fopen(path, "wb");
+    if (sWav == NULL) {
+        return 0;
+    }
+    WavHeader(header, 0);
+    fwrite(header, 1, sizeof(header), sWav);
+    return 1;
+}
+
+static void WriteWav(const s16* frames, int count) {
+    u8 bytes[AX_SAMPLES_PER_FRAME * 4];
+    int i;
+    for (i = 0; i < count * 2; i++) {
+        bytes[i * 2] = (u8)frames[i];
+        bytes[i * 2 + 1] = (u8)((u16)frames[i] >> 8);
+    }
+    fwrite(bytes, 4, (size_t)count, sWav);
+    sWavFrames += (unsigned long long)count;
+}
+
+/* PORT_AX_TRACE=1: once a second, what the mixer is doing. */
+static int sTrace;
+
+static void TraceVoices(void) {
+    int running = 0, panned = 0, aux[3] = {0, 0, 0}, formats[3] = {0, 0, 0}, looping = 0;
+    int i;
+    for (i = 0; i < AX_VOICE_MAX; i++) {
+        AXPB* pb = &sVoices[i].pb;
+        if (sVoices[i].priority == AX_PRIORITY_FREE || pb->state != AX_VOICE_RUN) {
+            continue;
         }
-        next = current + nibbles;
-    } else {
-        next = current + step;
+        running++;
+        panned += pb->mix.vL != pb->mix.vR;
+        aux[0] += (pb->mixerCtrl & (AX_MIXER_CTRL_AL | AX_MIXER_CTRL_AR)) != 0;
+        aux[1] += (pb->mixerCtrl & (AX_MIXER_CTRL_BL | AX_MIXER_CTRL_BR)) != 0;
+        aux[2] += (pb->mixerCtrl & (AX_MIXER_CTRL_CL | AX_MIXER_CTRL_CR)) != 0;
+        formats[pb->addr.format == AX_FORMAT_ADPCM ? 0 : pb->addr.format == AX_FORMAT_PCM16 ? 1 : 2]++;
+        looping += pb->addr.loopFlag != 0;
     }
-    if (next > end) {
-        if (pb->addr.loopFlag) {
-            next = loop + (next - end - 1);
-        } else {
-            next = end;
-            pb->state = AX_VOICE_STOP;
+    if (getenv("PORT_AX_TRACE")[0] == '2') {
+        for (i = 0; i < AX_VOICE_MAX; i++) {
+            AXPB* pb = &sVoices[i].pb;
+            if (sVoices[i].priority == AX_PRIORITY_FREE || pb->state != AX_VOICE_RUN) {
+                continue;
+            }
+            PortLog("  voice %2d prio %2u ve %04x%+d L %04x R %04x AL %04x BL %04x ratio %u.%04x lpf %d bq %d cur %08x "
+                    "loop %08x end %08x",
+                    i, sVoices[i].priority, pb->ve.currentVolume, (s16)pb->ve.currentDelta, pb->mix.vL, pb->mix.vR,
+                    pb->mix.vAuxAL, pb->mix.vAuxBL, pb->src.ratioHi, pb->src.ratioLo, pb->lpf.on, pb->biquad.on,
+                    ((u32)pb->addr.currentAddressHi << 16) | pb->addr.currentAddressLo,
+                    ((u32)pb->addr.loopAddressHi << 16) | pb->addr.loopAddressLo,
+                    ((u32)pb->addr.endAddressHi << 16) | pb->addr.endAddressLo);
         }
     }
-    pb->addr.currentAddressHi = (u16)(next >> 16);
-    pb->addr.currentAddressLo = (u16)next;
+    PortLog("AX trace %.1f s: %d running (%d ADPCM, %d PCM16, %d PCM8; %d looping), %d panned, aux A/B/C %d/%d/%d "
+            "(callbacks %d%d%d), master 0x%x",
+            sFrames * 0.003, running, formats[0], formats[1], formats[2], looping, panned, aux[0], aux[1], aux[2],
+            sAuxCallback[0] != NULL, sAuxCallback[1] != NULL, sAuxCallback[2] != NULL, sMasterVolume);
+}
+
+static s16 Output(s32 v) {
+    v = (s32)(((s64)v * sMasterVolume) >> 15);
+    if (v > 32767 || v < -32768) {
+        sClippedSamples++;
+        return v > 0 ? 32767 : -32768;
+    }
+    return (s16)v;
 }
 
 static void AudioFrame(void) {
-    int i;
+    int voices = 0;
+    int i, bus, ch;
     sFrames++;
+    memset(&sBuses, 0, sizeof(sBuses));
     for (i = 0; i < AX_VOICE_MAX; i++) {
         AXVPB* vpb = &sVoices[i];
         if (vpb->priority != AX_PRIORITY_FREE && vpb->pb.state == AX_VOICE_RUN) {
-            AdvanceVoice(vpb);
+            PortAXMixVoice(vpb, &sBuses);
+            voices++;
         }
         vpb->sync = 0;
     }
-    for (i = 0; i < 3; i++) {
-        if (sAuxCallback[i] != NULL) {
+    if (voices > sMostVoices) {
+        sMostVoices = voices;
+    }
+    if (sTrace && sFrames % 333 == 0) {
+        TraceVoices();
+    }
+
+    /* Aux buses through their effects and back into the main mix. Without a callback a
+     * bus is dropped. Stereo output: the surround channels are not heard. */
+    for (bus = 0; bus < 3; bus++) {
+        if (sAuxCallback[bus] != NULL) {
             void* chans[3];
-            memset(sAuxBuffers[i], 0, sizeof(sAuxBuffers[i]));
-            chans[0] = sAuxBuffers[i][0];
-            chans[1] = sAuxBuffers[i][1];
-            chans[2] = sAuxBuffers[i][2];
-            sAuxCallback[i](chans, sAuxContext[i]);
+            s32 ret = sAuxReturnVolume[bus];
+            chans[0] = sBuses.aux[bus][0];
+            chans[1] = sBuses.aux[bus][1];
+            chans[2] = sBuses.aux[bus][2];
+            sAuxCallback[bus](chans, sAuxContext[bus]);
+            for (ch = 0; ch < 2; ch++) {
+                for (i = 0; i < AX_SAMPLES_PER_FRAME; i++) {
+                    sBuses.main[ch][i] += (s32)(((s64)sBuses.aux[bus][ch][i] * ret) >> 15);
+                }
+            }
         }
     }
+
+    for (i = 0; i < AX_SAMPLES_PER_FRAME; i++) {
+        sOut[i * 2] = Output(sBuses.main[0][i]);
+        sOut[i * 2 + 1] = Output(sBuses.main[1][i]);
+    }
+    if (sWav != NULL) {
+        WriteWav(sOut, AX_SAMPLES_PER_FRAME);
+    }
+    if (sSink != NULL) {
+        sSink(sOut, AX_SAMPLES_PER_FRAME, sSinkContext);
+    }
+
     if (sFrameCallback != NULL) {
         sFrameCallback();
     }
@@ -129,7 +221,9 @@ static void PrintSummary(void) {
             }
         }
     }
-    PortLog("AX: %llu frames, %d voices acquired, %d running at exit", sFrames, acquired, running);
+    PortLog("AX: %llu frames, at most %d voices mixed at once, %llu samples clipped; %d voices acquired, %d running at exit",
+            sFrames, sMostVoices, sClippedSamples, acquired, running);
+    FinishWav();
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -163,8 +257,11 @@ void AXInit(void) {
     for (i = 0; i < AX_VOICE_MAX; i++) {
         ResetVoice(&sVoices[i], i);
     }
+    PortAXMixInit();
+    sTrace = getenv("PORT_AX_TRACE") != NULL;
     /* The first frame follows the next; NW4R expects the callback from interrupt context. */
-    PortAddTimer(AudioFrame, PortNow() + OSMillisecondsToTicks(3), OSMillisecondsToTicks(3));
+    PortSetTimerCatchUp(PortAddTimer(AudioFrame, PortNow() + OSMillisecondsToTicks(3), OSMillisecondsToTicks(3)),
+                        OSMillisecondsToTicks(150));
     PortAddSummary(PrintSummary);
 }
 

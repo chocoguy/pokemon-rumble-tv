@@ -1,7 +1,8 @@
-/* The headless runner (macOS): runs the game with no window, no sound and no input.
+/* The headless runner (macOS): runs the game with no window and no live input.
  *
  *   rumble [--frames N] [--rom DIR] [--nand DIR] [--realtime] [--scale N] [--no-gpu]
  *          [--dump-frame K PATH]... [--dump-every N DIR] [--input FILE]
+ *          [--wav PATH] [--audio]
  *   rumble --check-assets [--rom DIR]
  *
  * --frames N   stop after N video retraces (60 per second of game time)
@@ -14,10 +15,13 @@
  * --dump-frame K PATH  write what the display shows at retrace K as a PNG (repeatable)
  * --dump-every N DIR  also write every Nth retrace as DIR/frame-K.png
  * --input FILE  press the Wii Remote's buttons as the script says (port/pad/port_pad.c)
+ * --wav PATH   write everything the sound mixer outputs to a WAV file (32 kHz stereo)
+ * --audio      play the sound on this Mac's output (implies --realtime)
  * --check-assets  run every content file through its byte-order fixup and exit
  *
  * The exit status is 0 when the run reached its end without a fatal error. The summary
  * on stderr counts [RED] lines, frames and GX commands. */
+#include <port_audio.h>
 #include <port_os.h>
 #include <port_endian.h>
 #include <limits.h>
@@ -55,6 +59,7 @@ static void RepoPath(char* out, size_t size, const char* relative) {
 static void Usage(void) {
     fprintf(stderr, "usage: rumble [--frames N] [--rom DIR] [--nand DIR] [--realtime] [--scale N] [--no-gpu]\n"
                     "              [--dump-frame K PATH]... [--dump-every N DIR] [--input FILE]\n"
+                    "              [--wav PATH] [--audio]\n"
                     "       rumble --check-assets [--rom DIR]\n");
     exit(2);
 }
@@ -65,6 +70,8 @@ int main(int argc, char** argv) {
     int checkAssets = 0;
     int gpu = 1;
     int scale = 1;
+    int audio = 0;
+    const char* wav = NULL;
 
     RepoPath(sRom, sizeof(sRom), "rom/content");
     RepoPath(sNand, sizeof(sNand), "build/nand");
@@ -93,6 +100,11 @@ int main(int argc, char** argv) {
             if (!PortPadLoadScript(argv[++i])) {
                 return 2;
             }
+        } else if (strcmp(argv[i], "--wav") == 0 && i + 1 < argc) {
+            wav = argv[++i];
+        } else if (strcmp(argv[i], "--audio") == 0) {
+            audio = 1;
+            gPortConfig.fastTime = 0;
         } else if (strcmp(argv[i], "--check-assets") == 0) {
             checkAssets = 1;
         } else if (strcmp(argv[i], "--headless") == 0) {
@@ -116,6 +128,13 @@ int main(int argc, char** argv) {
 
     if (gpu) {
         PortGXStart(scale);
+    }
+    if (wav != NULL && !PortAudioWriteWav(wav)) {
+        fprintf(stderr, "rumble: cannot write %s\n", wav);
+        return 1;
+    }
+    if (audio && !PortAudioDeviceStart()) {
+        PortLog("no sound output; running silent");
     }
     PortOSStart(GameMain);
     return PortOSWaitForExit();

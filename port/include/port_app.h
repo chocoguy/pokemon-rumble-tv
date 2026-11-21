@@ -14,6 +14,25 @@ extern "C" {
  * Returns 0 if the GPU backend could not start (the game runs, nothing is drawn). */
 int PortStartGame(const char* romDir, const char* nandDir, int scale);
 
+/* The game's own save folder under nandDir: savedata.bin, backup/savedata.bin and
+ * banner.bin. The game writes each file to /tmp and moves it here, so a file in this
+ * folder is always complete. */
+#define PORT_SAVE_DIR "/title/00010001/57505345/data"
+
+/* Called on a game thread each time a save file appears in, is replaced in or is deleted
+ * from PORT_SAVE_DIR. A save is several such changes a few frames apart. Set it before
+ * PortStartGame. */
+void PortSetSaveChangedCallback(void (*callback)(void));
+
+/* Freezes the game at its next safe point: no game code, interrupts or GPU work run
+ * until PortResumeGame. Waits up to timeoutMs for the game to stop and returns 1 if it
+ * has. Game time does not pass while frozen. Call both from the same (main) thread. */
+int PortSuspendGame(int timeoutMs);
+void PortResumeGame(void);
+
+/* Frames the game has shown so far (one per completed GX copy to the display). */
+unsigned int PortFramesPresented(void);
+
 /* Controllers (port/pad/port_pad.c). Each of the shell's controllers is a Wii Remote on
  * channel 0-3 with a Classic Controller attached, which the game supports as is. The
  * shell sets a channel's state once per frame from any thread; NULL means no controller

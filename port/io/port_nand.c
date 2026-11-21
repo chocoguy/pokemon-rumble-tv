@@ -3,8 +3,15 @@
  * A NAND path maps to <nandDir><absolute path>; relative paths start at the current
  * directory, which is the title's home directory /title/00010001/57505345/data. The
  * operations run synchronously; the async variants deliver their callback in interrupt
- * context at the next safe point, as the IPC interrupt did on the console. */
+ * context at the next safe point, as the IPC interrupt did on the console.
+ *
+ * The game's save files (savedata.bin, backup/savedata.bin, banner.bin) are written to
+ * /tmp first and moved into place; a move replaces an existing file of the same name, as
+ * the console's file system does, and is a host rename, so a file is either the old or
+ * the new one after a crash. Written files are flushed to storage when closed.
+ * PORT_NAND_TRACE=1 logs every operation and its result. */
 #include <port_os.h>
+#include <port_app.h>
 #include <revolution/nand.h>
 #include <dirent.h>
 #include <errno.h>
@@ -15,10 +22,31 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define HOME_DIR "/title/00010001/57505345/data"
+#define HOME_DIR PORT_SAVE_DIR
 
 static char sCurrentDir[NAND_MAX_PATH] = HOME_DIR;
 static int sInitialized;
+static int sTrace;
+static void (*sSaveChanged)(void);
+
+void PortSetSaveChangedCallback(void (*callback)(void)) {
+    sSaveChanged = callback;
+}
+
+/* Tells the shell when an entry under the save folder changed (absolute NAND path). */
+static void NoteChange(const char* abs) {
+    size_t n = strlen(HOME_DIR);
+    if (sSaveChanged != NULL && strncmp(abs, HOME_DIR, n) == 0 && (abs[n] == '/' || abs[n] == '\0')) {
+        sSaveChanged();
+    }
+}
+
+static s32 Trace(const char* op, const char* path, s32 result) {
+    if (sTrace) {
+        PortLog("[nand] @%u %s %s -> %d", PortRetraceCount(), op, path ? path : "", (int)result);
+    }
+    return result;
+}
 
 static int MakeDirs(const char* hostPath) {
     char buf[1024];
@@ -40,6 +68,7 @@ static void InitOnce(void) {
         return;
     }
     sInitialized = 1;
+    sTrace = getenv("PORT_NAND_TRACE") != NULL;
     snprintf(buf, sizeof(buf), "%s%s", gPortConfig.nandDir, HOME_DIR);
     MakeDirs(buf);
     snprintf(buf, sizeof(buf), "%s/tmp", gPortConfig.nandDir);
@@ -162,10 +191,10 @@ s32 NANDCreate(const char* path, u8 perm, u8 attr) {
     }
     fd = open(host, O_CREAT | O_EXCL | O_WRONLY, 0644);
     if (fd < 0) {
-        return FromErrno(errno);
+        return Trace("create", path, FromErrno(errno));
     }
     close(fd);
-    return NAND_RESULT_OK;
+    return Trace("create", path, NAND_RESULT_OK);
 }
 
 s32 NANDCreateDir(const char* path, u8 perm, u8 attr) {
@@ -175,7 +204,7 @@ s32 NANDCreateDir(const char* path, u8 perm, u8 attr) {
     if (HostPath(path, host, sizeof(host)) != NAND_RESULT_OK) {
         return NAND_RESULT_INVALID;
     }
-    return mkdir(host, 0755) == 0 ? NAND_RESULT_OK : FromErrno(errno);
+    return Trace("mkdir", path, mkdir(host, 0755) == 0 ? NAND_RESULT_OK : FromErrno(errno));
 }
 
 static int RemoveTree(const char* host) {
@@ -205,35 +234,101 @@ static int RemoveTree(const char* host) {
 
 s32 NANDDelete(const char* path) {
     char host[1024];
-    if (HostPath(path, host, sizeof(host)) != NAND_RESULT_OK) {
+    char abs[256];
+    s32 result;
+    if (AbsPath(path, abs, sizeof(abs)) != NAND_RESULT_OK || HostPath(abs, host, sizeof(host)) != NAND_RESULT_OK) {
         return NAND_RESULT_INVALID;
     }
-    return RemoveTree(host) == 0 ? NAND_RESULT_OK : FromErrno(errno);
+    result = Trace("delete", path, RemoveTree(host) == 0 ? NAND_RESULT_OK : FromErrno(errno));
+    if (result == NAND_RESULT_OK) {
+        NoteChange(abs);
+    }
+    return result;
 }
 
-/* Moves `path` into the directory `destDir`, keeping its name. */
-s32 NANDMove(const char* path, const char* destDir) {
+/* Flushes the directory that holds `host` so a rename in it reaches storage. */
+static void SyncParent(const char* host) {
+    char dir[1024];
+    char* slash;
+    int fd;
+    snprintf(dir, sizeof(dir), "%s", host);
+    slash = strrchr(dir, '/');
+    if (slash == NULL || slash == dir) {
+        return;
+    }
+    *slash = '\0';
+    fd = open(dir, O_RDONLY);
+    if (fd >= 0) {
+        fsync(fd);
+        close(fd);
+    }
+}
+
+/* Moves `path` into the directory `destDir`, keeping its name. Like the console's file
+ * system, an existing entry of the same kind at the destination is replaced (a file by a
+ * file, a directory by a directory); the game's save commit depends on that. */
+static s32 Move(const char* path, const char* destDir) {
     char from[1024];
     char dirHost[1024];
     char to[1200];
-    const char* name = strrchr(path, '/');
-    struct stat st;
-    name = name ? name + 1 : path;
-    if (HostPath(path, from, sizeof(from)) != NAND_RESULT_OK || HostPath(destDir, dirHost, sizeof(dirHost)) != NAND_RESULT_OK) {
+    const char* name;
+    struct stat src;
+    struct stat dst;
+    char abs[256];
+    size_t len;
+
+    if (AbsPath(path, abs, sizeof(abs)) != NAND_RESULT_OK) {
         return NAND_RESULT_INVALID;
     }
-    if (stat(from, &st) != 0) {
+    len = strlen(abs);
+    if (len > 1 && abs[len - 1] == '/') {
+        abs[--len] = '\0';
+    }
+    name = strrchr(abs, '/');
+    name = name ? name + 1 : abs;
+    if (HostPath(abs, from, sizeof(from)) != NAND_RESULT_OK || HostPath(destDir, dirHost, sizeof(dirHost)) != NAND_RESULT_OK) {
+        return NAND_RESULT_INVALID;
+    }
+    if (stat(from, &src) != 0) {
+        return NAND_RESULT_NOEXISTS;
+    }
+    if (stat(dirHost, &dst) != 0 || !S_ISDIR(dst.st_mode)) {
         return NAND_RESULT_NOEXISTS;
     }
     snprintf(to, sizeof(to), "%s/%s", dirHost, name);
     if (strcmp(from, to) == 0) {
         return NAND_RESULT_OK;
     }
-    if (stat(to, &st) == 0) {
-        /* The console's move fails onto an existing name; the game deletes first. */
-        return NAND_RESULT_EXISTS;
+    if (stat(to, &dst) == 0) {
+        if (S_ISDIR(src.st_mode) != S_ISDIR(dst.st_mode)) {
+            return NAND_RESULT_INVALID;
+        }
+        /* rename() replaces a file atomically; a directory must go first. */
+        if (S_ISDIR(dst.st_mode) && RemoveTree(to) != 0) {
+            return FromErrno(errno);
+        }
     }
-    return rename(from, to) == 0 ? NAND_RESULT_OK : FromErrno(errno);
+    if (rename(from, to) != 0) {
+        return FromErrno(errno);
+    }
+    SyncParent(to);
+    SyncParent(from);
+    {
+        char destAbs[256];
+        if (AbsPath(destDir, destAbs, sizeof(destAbs)) == NAND_RESULT_OK) {
+            NoteChange(destAbs);
+        }
+        NoteChange(abs);
+    }
+    return NAND_RESULT_OK;
+}
+
+s32 NANDMove(const char* path, const char* destDir) {
+    s32 result = Move(path, destDir);
+    if (sTrace) {
+        PortLog("[nand] @%u move %s -> %s -> %d", PortRetraceCount(), path, destDir, (int)result);
+    }
+    return result;
 }
 
 s32 NANDOpen(const char* path, NANDFileInfo* info, u8 accType) {
@@ -260,14 +355,14 @@ s32 NANDOpen(const char* path, NANDFileInfo* info, u8 accType) {
         return NAND_RESULT_INVALID;
     }
     if (stat(host, &st) != 0) {
-        return NAND_RESULT_NOEXISTS;
+        return Trace("open", abs, NAND_RESULT_NOEXISTS);
     }
     if (S_ISDIR(st.st_mode)) {
-        return NAND_RESULT_INVALID;
+        return Trace("open", abs, NAND_RESULT_INVALID);
     }
     fd = open(host, flags);
     if (fd < 0) {
-        return FromErrno(errno);
+        return Trace("open", abs, FromErrno(errno));
     }
     memset(info, 0, sizeof(*info));
     info->fileDescriptor = fd;
@@ -275,7 +370,7 @@ s32 NANDOpen(const char* path, NANDFileInfo* info, u8 accType) {
     snprintf(info->origPath, sizeof(info->origPath), "%s", abs);
     info->accType = accType;
     info->mark = 1;
-    return NAND_RESULT_OK;
+    return Trace(accType & NAND_ACCESS_WRITE ? "open rw" : "open r", abs, NAND_RESULT_OK);
 }
 
 s32 NANDPrivateOpen(const char* path, NANDFileInfo* info, u8 accType) {
@@ -286,9 +381,12 @@ s32 NANDClose(NANDFileInfo* info) {
     if (info->mark != 1) {
         return NAND_RESULT_INVALID;
     }
+    if (info->accType & NAND_ACCESS_WRITE) {
+        fsync(info->fileDescriptor);
+    }
     close(info->fileDescriptor);
     info->mark = 0;
-    return NAND_RESULT_OK;
+    return Trace("close", info->origPath, NAND_RESULT_OK);
 }
 
 s32 NANDRead(NANDFileInfo* info, void* buf, u32 length) {

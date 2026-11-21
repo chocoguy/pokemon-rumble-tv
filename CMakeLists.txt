@@ -72,6 +72,11 @@ add_library(rumble_metal STATIC ${ROOT}/platform/metal/port_gfx_metal.m)
 target_include_directories(rumble_metal PRIVATE ${ROOT}/port/include)
 target_compile_options(rumble_metal PRIVATE -fobjc-arc -g -Wall)
 
+# The sound output (AVAudioEngine), shared with the tvOS app like the Metal backend.
+add_library(rumble_audio STATIC ${ROOT}/platform/apple/port_audio_apple.m)
+target_include_directories(rumble_audio PRIVATE ${ROOT}/port/include)
+target_compile_options(rumble_audio PRIVATE -fobjc-arc -g -Wall)
+
 # -DPORT_SANITIZE=ON: AddressSanitizer and UndefinedBehaviorSanitizer on everything
 # (the phase 2 check runs this build).
 option(PORT_SANITIZE "Build with ASan and UBSan" OFF)
@@ -80,7 +85,7 @@ if(PORT_SANITIZE)
     # emitted, and the fork relies on the unoptimised set.
     set(SANITIZE_FLAGS -fsanitize=address,undefined -fno-sanitize=vptr,function -fno-omit-frame-pointer
         -fsanitize-ignorelist=${ROOT}/port/sanitize_ignorelist.txt)
-    foreach(target rumble_fork rumble_port rumble_metal)
+    foreach(target rumble_fork rumble_port rumble_metal rumble_audio)
         target_compile_options(${target} PRIVATE ${SANITIZE_FLAGS})
     endforeach()
 endif()
@@ -90,16 +95,16 @@ set(LINK_STUBS ${CMAKE_BINARY_DIR}/link_stubs.c)
 add_custom_command(
     OUTPUT ${LINK_STUBS}
     COMMAND ${Python3_EXECUTABLE} ${ROOT}/tools/gen_link_stubs.py --sdk ${PORT_SDK} --out ${LINK_STUBS}
-            --provides $<TARGET_FILE:rumble_metal> $<TARGET_FILE:rumble_fork> $<TARGET_FILE:rumble_port>
-    DEPENDS rumble_fork rumble_port rumble_metal ${ROOT}/tools/gen_link_stubs.py
+            --provides $<TARGET_FILE:rumble_metal> --provides $<TARGET_FILE:rumble_audio> $<TARGET_FILE:rumble_fork> $<TARGET_FILE:rumble_port>
+    DEPENDS rumble_fork rumble_port rumble_metal rumble_audio ${ROOT}/tools/gen_link_stubs.py
     COMMENT "Generating link stubs")
 
 add_library(rumble_stubs STATIC ${LINK_STUBS})
 
 add_executable(rumble ${ROOT}/platform/headless/main.c)
 set_source_files_properties(${ROOT}/platform/headless/main.c PROPERTIES COMPILE_OPTIONS "${FORK_COMMON_FLAGS};${FORK_C_FLAGS};-g")
-target_link_libraries(rumble PRIVATE rumble_fork rumble_port rumble_metal rumble_stubs
-    "-framework Foundation" "-framework Metal" "-framework CoreGraphics" "-framework ImageIO")
+target_link_libraries(rumble PRIVATE rumble_fork rumble_port rumble_metal rumble_audio rumble_stubs
+    "-framework Foundation" "-framework Metal" "-framework CoreGraphics" "-framework ImageIO" "-framework AVFoundation")
 if(PORT_SANITIZE)
     target_compile_options(rumble PRIVATE ${SANITIZE_FLAGS})
     target_link_options(rumble PRIVATE ${SANITIZE_FLAGS})
@@ -117,6 +122,13 @@ add_test(NAME title_1900_frames COMMAND ${ROOT}/tests/headless/boot.sh $<TARGET_
 add_test(NAME new_game_7300_frames COMMAND ${ROOT}/tests/headless/boot.sh $<TARGET_FILE:rumble> 7300 ${CMAKE_BINARY_DIR}/new-game-test
          --input ${ROOT}/tests/input/new_game.txt --dump-frame 2701 ${CMAKE_BINARY_DIR}/new-game-test-intro.png
          --dump-frame 7201 ${CMAKE_BINARY_DIR}/new-game-test-hub.png)
+# Phase 5: the title music through the mixer, as a WAV (sound-test.wav), audible, unclipped, stereo.
+add_test(NAME title_sound_1900_frames COMMAND ${ROOT}/tests/headless/sound.sh $<TARGET_FILE:rumble> ${CMAKE_BINARY_DIR}/sound-test)
+# Analog walking: the patched player script's speed at part pushes of the stick.
+add_test(NAME analog_walk_8000_frames COMMAND ${ROOT}/tests/headless/walk.sh $<TARGET_FILE:rumble> ${CMAKE_BINARY_DIR}/walk-test)
+# Phase 6: save, quit, relaunch, continue; a corrupt save falls back to the backup; then
+# the pause menu's picture and SD Card entries and HOME, all stubbed.
+add_test(NAME saves_and_stubs COMMAND ${ROOT}/tests/headless/save.sh $<TARGET_FILE:rumble> ${CMAKE_BINARY_DIR}/save-test)
 # Phase 4: the same with a Classic Controller, as the Apple TV app presents controllers
 # (the hub's hint then shows the Classic Controller's a instead of the remote's 2).
 add_test(NAME new_game_classic_7300_frames COMMAND ${ROOT}/tests/headless/boot.sh $<TARGET_FILE:rumble> 7300

@@ -79,6 +79,12 @@ int PortFixupBRRES(void* file);
 
 /* The game's compiled scripts (.pkc, port_pkc.c). */
 int PortFixupPKC(void* file, size_t size);
+/* The port's changes to the game's scripts (port/script/port_script_patch.c), after
+ * PortFixupPKC: returns a patched copy of a script it knows (and sets *size), otherwise
+ * `file` itself. A script whose code is not exactly as expected is left alone. */
+const void* PortPatchScript(const char* name, const void* file, size_t* size);
+/* The index of the game's script native `name` (CPpuEnv.cpp), or -1. */
+int PortScriptNativeIndex(const char* name);
 
 /* The stages' collision trees (.bsp, port_bsp.c). */
 int PortFixupBSP(void* file, size_t size);

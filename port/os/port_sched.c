@@ -10,6 +10,7 @@
  * threads at once and needs no host-level locking.
  */
 #include <port_os.h>
+#include <port_app.h>
 #include <revolution/os/OSThread.h>
 #include <revolution/os/OSMutex.h>
 #include <mach/mach_time.h>
@@ -155,6 +156,11 @@ static mach_timebase_info_data_t sTimebase;
  * skip frames or starve its controller sampling, and a scripted run repeats exactly. */
 static volatile OSTime sVirtual;
 #define FAST_READ_STEP 61 /* about 1 microsecond */
+/* The console's time base counts from 2000-01-01 00:00 local time (the RTC plus the
+ * system settings' bias), which the game shows on its save slots and stamps on every
+ * Pokémon it records. Real time starts from the host's local clock; fast mode keeps
+ * 2000-01-01 so runs repeat exactly (the game also seeds its random numbers from it). */
+static OSTime sEpoch;
 
 static uint64_t HostNanos(void) {
     uint64_t t = mach_absolute_time() - sHostStart;
@@ -166,7 +172,7 @@ OSTime PortNow(void) {
         return __atomic_load_n(&sVirtual, __ATOMIC_SEQ_CST);
     }
     /* OS_TIMER_CLOCK is 60.75 MHz: 243 ticks every 4000 ns. */
-    return (OSTime)(HostNanos() * 243 / 4000);
+    return sEpoch + (OSTime)(HostNanos() * 243 / 4000);
 }
 
 /* A read of the clock by the game. */
@@ -212,6 +218,7 @@ typedef struct PortTimer {
     PortTimerFunc func;
     OSTime fire;
     OSTime period;
+    OSTime catchUp; /* real time: how far behind it may fall and still make up the missed events */
 } PortTimer;
 static PortTimer sTimers[8];
 static int sTimerCount;
@@ -268,7 +275,12 @@ int PortAddTimer(PortTimerFunc func, OSTime firstFire, OSTime period) {
     sTimers[sTimerCount].func = func;
     sTimers[sTimerCount].fire = firstFire;
     sTimers[sTimerCount].period = period;
+    sTimers[sTimerCount].catchUp = 0;
     return sTimerCount++;
+}
+
+void PortSetTimerCatchUp(int timer, OSTime maxBehind) {
+    sTimers[timer].catchUp = maxBehind;
 }
 
 static OSTime NextEventTime(void) {
@@ -282,14 +294,83 @@ static OSTime NextEventTime(void) {
     return next;
 }
 
+/* ------------------------------------------------------------------------------------ */
+/* Suspension (PortSuspendGame): the app shell freezes the game while it is inactive, so
+ * no GPU work is submitted from the background and no game time passes. The game parks
+ * at the start of an interrupt dispatch, still holding sCPU, so no other game thread can
+ * run either; the handshake uses its own lock so the shell never waits for sCPU. */
+static volatile int sSuspendRequested;
+static int sParked;
+static pthread_mutex_t sParkLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sParkCond = PTHREAD_COND_INITIALIZER;
+
+static void Park(void) {
+    uint64_t start = mach_absolute_time();
+    uint64_t pausedNs;
+    pthread_mutex_lock(&sParkLock);
+    sParked = 1;
+    pthread_cond_broadcast(&sParkCond);
+    while (sSuspendRequested) {
+        pthread_cond_wait(&sParkCond, &sParkLock);
+    }
+    sParked = 0;
+    pthread_mutex_unlock(&sParkLock);
+    /* Game time skips the frozen stretch: timers resume where they were instead of
+     * catching up (the wall-clock date falls behind by as much). */
+    sHostStart += mach_absolute_time() - start;
+    pausedNs = (mach_absolute_time() - start) * sTimebase.numer / sTimebase.denom;
+    PortLog("resumed after %.1f s suspended", (double)pausedNs / 1e9);
+}
+
+int PortSuspendGame(int timeoutMs) {
+    struct timespec deadline;
+    int parked;
+    if (gPortConfig.fastTime) {
+        return 0;
+    }
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeoutMs / 1000;
+    deadline.tv_nsec += (long)(timeoutMs % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&sParkLock);
+    sSuspendRequested = 1;
+    pthread_cond_signal(&sIdleCond); /* an idle game re-checks for work at once */
+    while (!sParked) {
+        if (pthread_cond_timedwait(&sParkCond, &sParkLock, &deadline) != 0) {
+            break;
+        }
+    }
+    parked = sParked;
+    pthread_mutex_unlock(&sParkLock);
+    if (parked) {
+        PortLog("suspended");
+    } else {
+        PortLog("suspend: the game did not stop within %d ms", timeoutMs);
+    }
+    return parked;
+}
+
+void PortResumeGame(void) {
+    pthread_mutex_lock(&sParkLock);
+    sSuspendRequested = 0;
+    pthread_cond_broadcast(&sParkCond);
+    pthread_mutex_unlock(&sParkLock);
+}
+
 static int AnythingPending(OSTime now) {
-    return (sPosted & sUnmasked) != 0 || sCallbackHead != sCallbackTail || NextEventTime() <= now;
+    return sSuspendRequested || (sPosted & sUnmasked) != 0 || sCallbackHead != sCallbackTail || NextEventTime() <= now;
 }
 
 /* Runs every due interrupt once. Interrupts are disabled and the scheduler held off, as
  * in an exception handler; the caller reschedules afterwards. */
 static void Dispatch(void) {
     int round;
+    if (sSuspendRequested) {
+        Park();
+    }
     sInService = 1;
     Reschedule++;
     for (round = 0; round < 64; round++) {
@@ -315,8 +396,9 @@ static void Dispatch(void) {
         for (i = 0; i < sTimerCount; i++) {
             if (sTimers[i].fire <= now) {
                 sTimers[i].fire += sTimers[i].period;
-                if (sTimers[i].fire <= now && !gPortConfig.fastTime) {
-                    /* Fell behind the host clock: drop the missed events. */
+                if (sTimers[i].fire <= now && !gPortConfig.fastTime && now - sTimers[i].fire > sTimers[i].catchUp) {
+                    /* Fell behind the host clock: drop the missed events (within its catch-up
+                     * time, a timer fires again in the next round instead). */
                     sTimers[i].fire = now + sTimers[i].period;
                 }
                 sTimers[i].func();
@@ -1149,6 +1231,13 @@ void PortOSStart(void (*entry)(void)) {
 
     mach_timebase_info(&sTimebase);
     sHostStart = mach_absolute_time();
+    if (!gPortConfig.fastTime) {
+        time_t now = time(NULL);
+        struct tm local;
+        localtime_r(&now, &local);
+        /* 946684800: 2000-01-01 00:00 UTC in Unix time. */
+        sEpoch = (OSTime)((long long)now + local.tm_gmtoff - 946684800LL) * OS_TIMER_CLOCK;
+    }
     PortMemInit();
 
     for (prio = 0; prio <= 31; prio++) {

@@ -1,19 +1,28 @@
-/* The Apple TV app (phase 3 smoke test): one scene, one window, a view backed by a Metal
- * layer. The game starts on its own threads once the view is on screen; a display link
- * then shows the game's current frame once per screen refresh.
+/* The Apple TV app: one scene, one window, a view backed by a Metal layer. The game
+ * starts on its own threads once the view is on screen; a display link then shows the
+ * game's current frame once per screen refresh.
  *
- * Controllers (phase 4): controllers_tvos.m. The view controller is a
- * GCEventViewController that keeps controller input from UIKit, so the remote's Back
- * button pauses the game instead of leaving the app (the TV button still leaves).
+ * Controllers: controllers_tvos.m. The view controller is a GCEventViewController that
+ * keeps controller input from UIKit, so the remote's Back (Menu) button is the Classic
+ * Controller's + and opens the game's pause menu instead of leaving the app; the TV
+ * button still leaves.
  *
- * Still to come (phase 7): the log file, env.txt, saves copied to NSUserDefaults,
- * stopping GPU work when the app resigns. */
+ * Sound: platform/apple/port_audio_apple.m, started before the game.
+ *
+ * Wrappers (shell_tvos.h): the log in Library/Caches/log.txt and env.txt (env_tvos.m,
+ * before UIApplicationMain), saves in Library/Caches/save with a copy in the preferences
+ * (saves_tvos.m), a status line every minute. While the scene is inactive (the TV
+ * button, the Control Center, a screen saver) the game is frozen at a safe point, the
+ * display link and sound are paused, so no GPU work is submitted from the background,
+ * and a pending save copy is written. The idle timer is off while the app runs. */
 #import <GameController/GameController.h>
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #include <port_app.h>
+#include <port_audio.h>
 #include "controllers_tvos.h"
 #include "port_gfx_metal.h"
+#include "shell_tvos.h"
 
 @interface RumbleView : UIView
 @end
@@ -24,11 +33,14 @@
 @end
 
 @interface RumbleViewController : GCEventViewController
+- (void)suspendGame;
+- (void)resumeGame;
 @end
 
 @implementation RumbleViewController {
     CADisplayLink* _link;
     BOOL _started;
+    BOOL _suspended;
     /* Presses that arrive as UIKit events (the Simulator's keyboard, a remote UIKit
      * still sees), by press type or key; added to channel 0. */
     NSMutableSet<NSNumber*>* _held;
@@ -60,7 +72,7 @@ static NSNumber* PressKey(UIPress* p) {
         _taps[PressKey(p)] = @4;
         if (_pressesLogged < 20) {
             _pressesLogged++;
-            NSLog(@"rumble: UIKit press %@", PressKey(p));
+            RumbleLog(@"UIKit press %@", PressKey(p));
         }
     }
 }
@@ -139,18 +151,49 @@ static NSNumber* PressKey(UIPress* p) {
     layer.contentsScale = scale;
 
     content = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"content"];
-    nand = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
-        stringByAppendingPathComponent:@"save"];
+    nand = [RumbleCachesDir() stringByAppendingPathComponent:@"save"];
     [NSFileManager.defaultManager createDirectoryAtPath:nand withIntermediateDirectories:YES attributes:nil error:nil];
-    NSLog(@"rumble: screen %.0fx%.0f points, drawable scale %.2f", pts.width, pts.height, scale);
+    RumbleLog(@"screen %.0fx%.0f points, drawable scale %.2f (%.0fx%.0f pixels)", pts.width, pts.height, scale,
+              pts.width * scale, pts.height * scale);
+    RumbleSavesStart(nand);
+    if (!PortAudioDeviceStart()) {
+        RumbleLog(@"no sound output; running silent");
+    }
     if (!PortStartGame(content.fileSystemRepresentation, nand.fileSystemRepresentation, 2)) {
-        NSLog(@"rumble: no GPU");
+        RumbleLog(@"[RED] no GPU");
         return;
     }
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     RumbleControllersStart();
+    RumbleStatusStart();
     _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
     [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+
+/* The scene is going inactive: stop all game and GPU work until it is active again. */
+- (void)suspendGame {
+    if (!_started || _suspended) {
+        return;
+    }
+    _suspended = YES;
+    _link.paused = YES;
+    PortAudioDeviceSetPaused(1);
+    PortSuspendGame(1000);
+    RumbleStatusSetActive(NO);
+    RumbleSavesFlush();
+}
+
+- (void)resumeGame {
+    if (!_suspended) {
+        return;
+    }
+    _suspended = NO;
+    [_held removeAllObjects];
+    [_taps removeAllObjects];
+    PortResumeGame();
+    PortAudioDeviceSetPaused(0);
+    RumbleStatusSetActive(YES);
+    _link.paused = NO;
 }
 
 - (void)tick:(CADisplayLink*)link {
@@ -177,6 +220,18 @@ static NSNumber* PressKey(UIPress* p) {
     self.window.rootViewController = [RumbleViewController new];
     [self.window makeKeyAndVisible];
 }
+
+- (void)sceneWillResignActive:(UIScene*)scene {
+    (void)scene;
+    RumbleLog(@"scene inactive");
+    [(RumbleViewController*)self.window.rootViewController suspendGame];
+}
+
+- (void)sceneDidBecomeActive:(UIScene*)scene {
+    (void)scene;
+    RumbleLog(@"scene active");
+    [(RumbleViewController*)self.window.rootViewController resumeGame];
+}
 @end
 
 @interface RumbleAppDelegate : UIResponder <UIApplicationDelegate>
@@ -185,6 +240,9 @@ static NSNumber* PressKey(UIPress* p) {
 @end
 
 int main(int argc, char* argv[]) {
+    @autoreleasepool {
+        RumbleBootEnv();
+    }
     @autoreleasepool {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([RumbleAppDelegate class]));
     }

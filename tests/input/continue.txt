@@ -1,0 +1,11 @@
+# Relaunch with a save and continue it: button 2 every two seconds from the title screen
+# on picks Continue, Save Data A, and pages through any message on the way (such as
+# "The previous data was retrieved" after a corrupt save) into the Terminal by ~2700.
+#
+# retrace  buttons  [frames held, default 6]
+1900 2
+2020 2
+2140 2
+2260 2
+2380 2
+2500 2

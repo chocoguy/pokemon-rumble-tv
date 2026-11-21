@@ -19,6 +19,10 @@ static BOOL sBlack = TRUE;
 static const GXRenderModeObj* sMode;
 static int sInitialized;
 
+unsigned int PortRetraceCount(void) {
+    return sRetraceCount;
+}
+
 static void Retrace(void) {
     sRetraceCount++;
     if (sPreRetrace != NULL) {

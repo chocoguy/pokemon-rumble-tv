@@ -1,0 +1,44 @@
+# The stubbed Wii features, from a saved game (tests/headless/save.sh run 4): Continue
+# into the Terminal (to ~3100), then from the pause menu (PLUS; screen-down is LEFT with
+# the remote held sideways):
+#   3500  Take a Picture: the JPEG encoder runs, "Is it OK to save this picture to an SD
+#         Card?" Yes -> "An SD Card is not inserted." (FA reports an empty slot), asked
+#         again, then No at 4200 -> back to the game.
+#   4500  SD Card > Delete Pictures: two notices, Yes -> "An SD Card is not inserted."
+#   5900  HOME: the stubbed Home Button Menu opens and closes at once ("Select Btn:0").
+#
+# retrace  buttons  [frames held, default 6]
+1900 2
+2020 2
+2140 2
+2260 2
+2380 2
+2500 2
+2620 2
+2740 2
+2860 2
+2980 2
+3100 2
+3300 PLUS
+3500 LEFT
+3540 LEFT
+3600 2
+3800 2
+3950 2
+4100 2
+4200 LEFT
+4240 2
+4500 PLUS
+4600 LEFT
+4640 LEFT
+4680 LEFT
+4760 2
+4900 2
+5050 2
+5200 2
+5350 RIGHT
+5400 2
+5550 2
+5700 2
+5900 HOME
+6100 2

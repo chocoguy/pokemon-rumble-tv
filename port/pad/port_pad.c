@@ -14,8 +14,9 @@
  * the game sees its own mapping) and FRAMES is how long they are held (default 6). `#`
  * starts a comment. Presses may overlap; their buttons are combined. Classic Controller
  * names (CL_A CL_B CL_X CL_Y CL_L CL_R CL_ZL CL_ZR CL_PLUS CL_MINUS CL_UP CL_DOWN
- * CL_LEFT CL_RIGHT, and LS_UP LS_DOWN LS_LEFT LS_RIGHT for the left stick pushed fully)
- * attach a Classic Controller to channel 0 for the whole run, as the app shell does.
+ * CL_LEFT CL_RIGHT, and LS_UP LS_DOWN LS_LEFT LS_RIGHT for the left stick pushed fully, or
+ * part way with `@AMOUNT`, as in LS_UP@0.5) attach a Classic Controller to channel 0 for
+ * the whole run, as the app shell does.
  *
  * Wii Remote memory (the game's Pokémon transfer) and the speaker are stubbed: every
  * request is refused, which the game treats as a remote it cannot use for that. */
@@ -41,6 +42,7 @@
 
 typedef struct {
     u32 start, frames, buttons, classic;
+    float stick; /* how far LS_* push the left stick (1: fully) */
 } PortPress;
 
 static PortPress sScript[PORT_SCRIPT_MAX];
@@ -82,14 +84,23 @@ static const struct {
 
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
-static int ParseButtons(char* text, u32* out, u32* classic) {
+static int ParseButtons(char* text, u32* out, u32* classic, float* stick) {
     char* save = NULL;
     char* tok;
     *out = 0;
     *classic = 0;
+    *stick = 1.0f;
     for (tok = strtok_r(text, "+", &save); tok != NULL; tok = strtok_r(NULL, "+", &save)) {
         size_t i;
         int found = 0;
+        char* amount = strchr(tok, '@');
+        if (amount != NULL) {
+            *amount++ = '\0';
+            *stick = strtof(amount, NULL);
+            if (strncasecmp(tok, "LS_", 3) != 0 || *stick <= 0.0f || *stick > 1.0f) {
+                return 0;
+            }
+        }
         for (i = 0; i < COUNT(sButtonNames) && !found; i++) {
             if (strcasecmp(tok, sButtonNames[i].name) == 0) {
                 *out |= sButtonNames[i].mask;
@@ -130,7 +141,7 @@ int PortPadLoadScript(const char* path) {
         if (n <= 0) {
             continue;
         }
-        if (n < 2 || sScriptCount == PORT_SCRIPT_MAX || !ParseButtons(buttons, &sScript[sScriptCount].buttons, &sScript[sScriptCount].classic)) {
+        if (n < 2 || sScriptCount == PORT_SCRIPT_MAX || !ParseButtons(buttons, &sScript[sScriptCount].buttons, &sScript[sScriptCount].classic, &sScript[sScriptCount].stick)) {
             PortLog("[RED] input script %s:%d: cannot read this line", path, lineNo);
             fclose(f);
             return 0;
@@ -194,16 +205,21 @@ static float Clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* The script's remote buttons (the result) and Classic Controller bits (*classic) now. */
-static u32 CurrentHold(u32* classic) {
+/* The script's remote buttons (the result), Classic Controller bits (*classic) and left
+ * stick amount (*stick) now. */
+static u32 CurrentHold(u32* classic, float* stick) {
     u32 now = VIGetRetraceCount();
     u32 hold = sShellButtons;
     int i;
     *classic = 0;
+    *stick = 1.0f;
     for (i = 0; i < sScriptCount; i++) {
         if (now >= sScript[i].start && now < sScript[i].start + sScript[i].frames) {
             hold |= sScript[i].buttons;
             *classic |= sScript[i].classic;
+            if (sScript[i].classic & (LS_UP | LS_DOWN | LS_LEFT | LS_RIGHT)) {
+                *stick = sScript[i].stick;
+            }
         }
     }
     return hold;
@@ -419,13 +435,14 @@ s32 KPADRead(s32 chan, KPADStatus samples[], u32 length) {
     sSamples++;
     if (chan == 0) {
         u32 scriptClassic;
-        u32 hold = CurrentHold(&scriptClassic);
+        float stick;
+        u32 hold = CurrentHold(&scriptClassic, &stick);
         classic.buttons |= scriptClassic & 0xFFFF;
         if (scriptClassic & (LS_UP | LS_DOWN)) {
-            classic.ly = (scriptClassic & LS_UP) ? 1.0f : -1.0f;
+            classic.ly = (scriptClassic & LS_UP) ? stick : -stick;
         }
         if (scriptClassic & (LS_LEFT | LS_RIGHT)) {
-            classic.lx = (scriptClassic & LS_RIGHT) ? 1.0f : -1.0f;
+            classic.lx = (scriptClassic & LS_RIGHT) ? stick : -stick;
         }
         s->hold = hold;
         s->trig = hold & ~sLastHold;

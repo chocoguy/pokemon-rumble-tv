@@ -1,6 +1,7 @@
 /* The rest of the OS library: reports and panics, the run summary, calendar time,
  * reset and shutdown, and the system-menu calls the port answers itself. */
 #include <port_os.h>
+#include <port_app.h>
 #include <revolution/os.h>
 #include <revolution/os/OSTime.h>
 #include <revolution/os/OSReset.h>
@@ -125,6 +126,10 @@ void PortAddSummary(PortSummaryFunc func) {
     if (sSummaryCount < (int)(sizeof(sSummaries) / sizeof(sSummaries[0]))) {
         sSummaries[sSummaryCount++] = func;
     }
+}
+
+unsigned int PortFramesPresented(void) {
+    return sFramesPresented;
 }
 
 void PortNoteFramePresented(void) {

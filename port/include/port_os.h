@@ -60,6 +60,10 @@ OSTime PortNow(void);
 typedef void (*PortTimerFunc)(void);
 /* A periodic source serviced like an interrupt (VI retrace, audio DMA). */
 int PortAddTimer(PortTimerFunc func, OSTime firstFire, OSTime period);
+/* In real time a timer that falls behind the host clock (the game thread busy) drops the
+ * events it missed; with a catch-up time it makes up the ones less than `maxBehind` old,
+ * back to back (the audio frame: a gap in the sound is worse than a burst). */
+void PortSetTimerCatchUp(int timer, OSTime maxBehind);
 /* Raises an SDK interrupt (__OS_INTERRUPT_*); its handler runs at the next safe point. */
 void PortPostInterrupt(int interrupt);
 /* Runs `func(arg)` in interrupt context at the next safe point (async I/O completions). */
@@ -81,6 +85,8 @@ void PortFreeStack(void* base);
 
 /* Called from the VI retrace (port_vi.c) for the run summary and watchdog. */
 void PortNoteRetrace(unsigned int retraceCount);
+/* Retraces so far, read without a safe point (for logs). */
+unsigned int PortRetraceCount(void);
 void PortNoteFramePresented(void);
 
 /* Subsystem hooks for the summary printed at exit. */
