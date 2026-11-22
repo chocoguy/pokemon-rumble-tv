@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "id": "pokemon-rumble-tv",
+  "name": "Pokémon Rumble TV",
+  "game": "Pokémon Rumble (WiiWare, USA)",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+
+  "entry": "tools/tvos/port",
+  "commands": ["check", "prepare", "build", "install", "installed", "clean"],
+
+  "requirements": {
+    "macOS": "27.0",
+    "arch": "arm64",
+    "xcode": "27.0",
+    "platforms": ["tvOS"],
+    "brew": [],
+    "submodules": true,
+    "network": "none after the source and CMake are downloaded",
+    "diskGB": 2,
+    "firstBuildMinutes": 10
+  },
+
+  "account": {
+    "minimum": "free",
+    "capabilities": [],
+    "bundleId": "com.pokemonrumbletv.{team}"
+  },
+
+  "devices": {
+    "family": "appletv",
+    "minModel": "AppleTV14,1",
+    "minOS": "26.0"
+  },
+
+  "inputs": [
+    {
+      "id": "game",
+      "label": "Pokémon Rumble game files",
+      "help": "Install your WAD in Dolphin (Tools > Install WAD), and the installer finds the game in Dolphin's Wii folder. Or pick a folder of the decrypted .app content files.",
+      "kind": "folder",
+      "required": true,
+      "accept": [
+        { "name": "USA, title version 1", "titleId": "00010001/57505345", "gameId": "WPSE" }
+      ],
+      "verifiedBy": "prepare"
+    }
+  ],
+
+  "options": [],
+
+  "stages": [
+    { "id": "find", "label": "Finding your game files", "command": "prepare" },
+    { "id": "copy", "label": "Copying the game's contents", "command": "prepare" },
+    { "id": "executable", "label": "Checking the game's version", "command": "prepare" },
+    { "id": "configure", "label": "Setting up the Xcode project", "command": "build" },
+    { "id": "compile", "label": "Compiling the game", "command": "build" },
+    { "id": "sign", "label": "Signing the app", "command": "build" },
+    { "id": "install", "label": "Installing on the Apple TV", "command": "install" }
+  ],
+
+  "artifact": {
+    "app": "Rumble.app",
+    "sizeGB": 0.1
+  },
+
+  "saves": {
+    "strategy": "local",
+    "note": "Saves stay on the Apple TV: in the app's caches, with a copy in its settings that brings them back if tvOS clears the caches. Deleting the app deletes them. Keep the same team, so the bundle ID stays the same."
+  },
+
+  "logs": {
+    "process": "Rumble",
+    "files": ["Library/Caches/log.txt"],
+    "console": true
+  },
+
+  "diagnose": []
+}

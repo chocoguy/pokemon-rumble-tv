@@ -6,22 +6,23 @@ The WAD is encrypted, so this script does not read it. Install the WAD in Dolphi
 this script copies them from there, or from any folder given with --from.
 
 It then:
-  1. copies every content file to rom/content/, plus the shared contents the title's TMD
-     lists (the Home Button Menu's data), which Dolphin keeps in Wii/shared1,
+  1. copies every content file to rom/content/ (--out), plus the shared contents the
+     title's TMD lists (the Home Button Menu's data), which Dolphin keeps in Wii/shared1,
   2. finds the LZ-compressed main executable, decompresses it and checks it against the
      decomp's frozen manifest (size and SHA-256),
-  3. writes it to pokemon-rumble-decomp-tv/orig/wpse-v1/main.dol,
-  4. runs the decomp's own extractor for the message archive embedded in the executable,
+  3. writes it to pokemon-rumble-decomp-tv/orig/wpse-v1/main.dol (--dol),
+  4. extracts the message archive embedded in the executable (as the decomp's own
+     extractor does) into build/generated/ (--generated),
   5. lists what each content file is.
 
-Nothing it writes is tracked by git.
+Nothing it writes is tracked by git. tools/tvos/port runs the same import into its own
+work folder. Python 3.9 or newer (Xcode's /usr/bin/python3 is enough).
 """
 import argparse
 import hashlib
 import json
 import shutil
 import struct
-import subprocess
 import sys
 from pathlib import Path
 
@@ -163,6 +164,34 @@ def copy_shared_contents(source: Path, out_dir: Path, dolphin_dir) -> list:
     return missing
 
 
+# The message archive embedded in the executable, as the decomp's
+# tools/assets/extract_system_message.py finds it (which needs Python 3.10; this is the same
+# extraction for 3.9, with the same checks and the same output).
+SYSTEM_MESSAGE_ADDRESS = 0x80363A80
+SYSTEM_MESSAGE_SIZE = 11488
+SYSTEM_MESSAGE_SHA256 = "e27d380bbad3aff2ef2d41cfdc5b77590390a68937fef6edc87502f2d1813161"
+
+
+def extract_system_message(dol: bytes, archive: Path, include: Path) -> None:
+    offsets = struct.unpack_from(">18I", dol, 0)
+    addresses = struct.unpack_from(">18I", dol, 0x48)
+    sizes = struct.unpack_from(">18I", dol, 0x90)
+    data = None
+    for offset, start, length in zip(offsets, addresses, sizes):
+        if start <= SYSTEM_MESSAGE_ADDRESS and SYSTEM_MESSAGE_ADDRESS + SYSTEM_MESSAGE_SIZE <= start + length:
+            position = offset + SYSTEM_MESSAGE_ADDRESS - start
+            data = dol[position:position + SYSTEM_MESSAGE_SIZE]
+            break
+    if data is None or hashlib.sha256(data).hexdigest() != SYSTEM_MESSAGE_SHA256:
+        raise ImportError_("the embedded system message archive does not match the expected asset")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    archive.write_bytes(data)
+    include.parent.mkdir(parents=True, exist_ok=True)
+    lines = [", ".join(f"0x{value:02X}" for value in data[offset:offset + 16]) + "," for offset in range(0, len(data), 16)]
+    with open(include, "w", encoding="ascii", newline="\n") as out:
+        out.write("\n".join(lines) + "\n")
+
+
 def expected_executable():
     manifest = json.loads((DECOMP / "config/targets/wpse-v1.json").read_text(encoding="utf-8"))
     artifact = manifest["artifacts"][0]
@@ -187,7 +216,7 @@ def run(args) -> int:
         print(f"{source} holds no .app content files.", file=sys.stderr)
         return 2
 
-    out_dir = ROOT / "rom/content"
+    out_dir = Path(args.out) if args.out else ROOT / "rom/content"
     out_dir.mkdir(parents=True, exist_ok=True)
     for extra in ("title.tmd",):
         if (source / extra).is_file():
@@ -229,39 +258,31 @@ def run(args) -> int:
         )
         return 1
 
-    dol = DECOMP / "orig/wpse-v1/main.dol"
+    dol = Path(args.dol) if args.dol else DECOMP / "orig/wpse-v1/main.dol"
     dol.parent.mkdir(parents=True, exist_ok=True)
     dol.write_bytes(executable)
-    print(f"\nWrote {dol.relative_to(ROOT)}")
+    print(f"\nWrote {dol}")
 
-    archive = ROOT / "build/generated/assets/system_message.arc"
-    include = ROOT / "build/generated/include/system_message.inc"
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    include.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        [sys.executable, str(DECOMP / "tools/assets/extract_system_message.py"), str(dol), str(archive), "--c-include", str(include)],
-        cwd=DECOMP,
-    )
-    if result.returncode != 0:
-        print("The decomp's message-archive extractor failed.", file=sys.stderr)
+    generated = Path(args.generated) if args.generated else ROOT / "build/generated"
+    archive = generated / "assets/system_message.arc"
+    include = generated / "include/system_message.inc"
+    try:
+        extract_system_message(executable, archive, include)
+    except ImportError_ as error:
+        print(f"Couldn't extract the message archive: {error}", file=sys.stderr)
         return 1
-    print(f"Wrote {include.relative_to(ROOT)}")
+    print(f"Wrote {include}")
     print("Import complete.")
     return 0
 
 
 def main() -> int:
-    if sys.version_info < (3, 10):
-        # The decomp's own extractor (step 4) needs 3.10. macOS's /usr/bin/python3 is 3.9.
-        print(
-            f"This needs Python 3.10 or newer; {sys.executable} is {sys.version.split()[0]}.\n"
-            "Run it with a newer Python, for example: /opt/homebrew/bin/python3 tools/import_wad.py",
-            file=sys.stderr,
-        )
-        return 2
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--from", dest="source", help="folder of decrypted .app content files (default: Dolphin's Wii folder)")
     parser.add_argument("--dolphin-dir", help="Dolphin's user folder, if it is not in the usual place")
+    parser.add_argument("--out", help="where the contents go (default: rom/content)")
+    parser.add_argument("--dol", help="where the executable goes (default: the decomp's orig/wpse-v1/main.dol)")
+    parser.add_argument("--generated", help="where the generated files go (default: build/generated)")
     return run(parser.parse_args())
 
 

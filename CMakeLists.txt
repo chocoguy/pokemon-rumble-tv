@@ -1,12 +1,26 @@
-# Native port of Pokemon Rumble: the macOS headless runner, and the static libraries the
-# tvOS app links (tvos/tools/build.sh builds them here, then the xcodegen project).
+# Native port of Pokemon Rumble: the macOS headless runner and its tests, and the Apple
+# TV app (RumbleTV). CMakePresets.json has the usual configurations:
 #
-#   cmake -S . -B build/mac -G Ninja && cmake --build build/mac
-#   cmake -S . -B build/tvos -G Ninja -DCMAKE_SYSTEM_NAME=tvOS && cmake --build build/tvos
-#   cmake -S . -B build/tvos-sim -G Ninja -DCMAKE_SYSTEM_NAME=tvOS -DCMAKE_OSX_SYSROOT=appletvsimulator
-cmake_minimum_required(VERSION 3.24)
-project(PokemonRumbleTV C CXX OBJC)
+#   cmake --preset mac && cmake --build --preset mac          headless runner, ctest
+#   cmake --preset tvos-sim && cmake --build --preset tvos-sim   the app, tvOS simulator
+#   cmake --preset tvos -DRUMBLE_DEVELOPMENT_TEAM=<Team ID>      the app, a real Apple TV
+#   cmake --preset xcode                                      Mac, Xcode (the installer)
+#
+# tools/tvos/port drives the tvOS build for the installer.
+cmake_minimum_required(VERSION 3.31)
 
+# The release being built: tools/tvos/port passes the tag (1.0.0, or 1.0.0-rc1) and its
+# commit, which go in the app's Info.plist, so the installer can tell what's installed.
+# The bundle version is the numeric part as one build number.
+set(RUMBLE_VERSION "0.0.1" CACHE STRING "The release version (the tag without its v)")
+set(RUMBLE_COMMIT "" CACHE STRING "The commit built (short hash)")
+if(NOT RUMBLE_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)")
+    message(FATAL_ERROR "RUMBLE_VERSION ${RUMBLE_VERSION} isn't a version like 1.0.0")
+endif()
+set(_numeric "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
+math(EXPR RUMBLE_BUILD_NUMBER "${CMAKE_MATCH_1} * 10000 + ${CMAKE_MATCH_2} * 100 + ${CMAKE_MATCH_3}")
+
+# Apple silicon only. These have to be set before project().
 set(CMAKE_OSX_ARCHITECTURES arm64)
 if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
     # -DCMAKE_OSX_SYSROOT=appletvsimulator builds for the simulator.
@@ -15,13 +29,33 @@ if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
     else()
         set(PORT_SDK appletvos)
     endif()
-    set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0 CACHE STRING "Minimum tvOS version")
 else()
     set(PORT_SDK macosx)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 27.0 CACHE STRING "Minimum macOS version")
 endif()
+
+project(PokemonRumbleTV VERSION ${_numeric} LANGUAGES C CXX OBJC)
+
+# No optimisation in any configuration, as in the plain (no CMAKE_BUILD_TYPE) build: optimisation
+# changes which inline game functions are emitted, and the fork relies on the unoptimised set (an
+# optimised build links only through stubs for the missing ones). This matters for the Xcode
+# generator, whose Release configuration (the device build) would otherwise add -O3.
+foreach(_lang C CXX OBJC)
+    foreach(_config RELEASE RELWITHDEBINFO MINSIZEREL)
+        set(CMAKE_${_lang}_FLAGS_${_config} "-DNDEBUG")
+    endforeach()
+    set(CMAKE_${_lang}_FLAGS_DEBUG "")
+endforeach()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+
+# What tools/import_wad.py makes from the player's game files: the decrypted contents
+# (copied into the app) and the message archive the game's code includes. The defaults
+# are where import_wad.py puts them; tools/tvos/port passes its own work folder.
+set(RUMBLE_CONTENT_DIR "${ROOT}/rom/content" CACHE PATH "The imported game contents (the .app files)")
+set(RUMBLE_GENERATED_DIR "${ROOT}/build/generated" CACHE PATH "The files import_wad.py generates (include/)")
 
 # Flags shared with tools/compile_check.py.
 file(STRINGS ${ROOT}/port/compile_flags.txt FLAG_LINES)
@@ -38,6 +72,8 @@ foreach(line IN LISTS FLAG_LINES)
         list(APPEND FORK_C_FLAGS "${CMAKE_MATCH_1}")
     elseif(line MATCHES "^cxx: *(.*)$")
         list(APPEND FORK_CXX_FLAGS "${CMAKE_MATCH_1}")
+    elseif(line STREQUAL "-Ibuild/generated/include")
+        list(APPEND FORK_COMMON_FLAGS "-I${RUMBLE_GENERATED_DIR}/include")
     elseif(line MATCHES "^-I(.*)$")
         list(APPEND FORK_COMMON_FLAGS "-I${ROOT}/${CMAKE_MATCH_1}")
     elseif(expect_include_path)
@@ -53,7 +89,7 @@ endforeach()
 set(FORK_FLAGS ${FORK_COMMON_FLAGS} $<$<COMPILE_LANGUAGE:C>:${FORK_C_FLAGS}> $<$<COMPILE_LANGUAGE:CXX>:${FORK_CXX_FLAGS}>)
 
 # The fork's units: the same list compile_check.py checks.
-execute_process(COMMAND ${Python3_EXECUTABLE} ${ROOT}/tools/compile_check.py --list
+execute_process(COMMAND ${Python3_EXECUTABLE} ${ROOT}/tools/compile_check.py --list --generated ${RUMBLE_GENERATED_DIR}
                 OUTPUT_VARIABLE FORK_SOURCES COMMAND_ERROR_IS_FATAL ANY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ROOT}/tools/compile_check.py ${ROOT}/port/compile_flags.txt)
 
@@ -101,6 +137,12 @@ add_custom_command(
 
 add_library(rumble_stubs STATIC ${LINK_STUBS})
 
+if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+    add_subdirectory(tvos)
+    return()
+endif()
+
+# The headless runner and its tests are Mac tools.
 add_executable(rumble ${ROOT}/platform/headless/main.c)
 set_source_files_properties(${ROOT}/platform/headless/main.c PROPERTIES COMPILE_OPTIONS "${FORK_COMMON_FLAGS};${FORK_C_FLAGS};-g")
 target_link_libraries(rumble PRIVATE rumble_fork rumble_port rumble_metal rumble_audio rumble_stubs
@@ -134,3 +176,16 @@ add_test(NAME saves_and_stubs COMMAND ${ROOT}/tests/headless/save.sh $<TARGET_FI
 add_test(NAME new_game_classic_7300_frames COMMAND ${ROOT}/tests/headless/boot.sh $<TARGET_FILE:rumble> 7300
          ${CMAKE_BINARY_DIR}/new-game-classic-test --input ${ROOT}/tests/input/new_game_classic.txt
          --dump-frame 7201 ${CMAKE_BINARY_DIR}/new-game-classic-test-hub.png)
+
+# Rumble TV Installer: the Mac app players download. It embeds Sparkle.framework, which only the
+# Xcode generator does; its logic (no UI) is tested with any generator (target rumble_installertest).
+enable_language(Swift)
+set(RUMBLE_INSTALLER_LOGIC_SOURCES
+    "${ROOT}/apps/installer/Sources/PortEvent.swift"
+    "${ROOT}/apps/installer/Sources/Releases.swift"
+    "${ROOT}/apps/installer/Sources/SemVer.swift"
+    "${ROOT}/apps/installer/Sources/Workspace.swift")
+add_subdirectory(tests/installertest)
+if(CMAKE_GENERATOR STREQUAL "Xcode")
+    add_subdirectory(apps/installer)
+endif()

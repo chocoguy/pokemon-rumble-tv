@@ -4,10 +4,13 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# tvOS app: generated project, local settings, build output
+# tvOS app: local settings, and the old xcodegen project and its build output
 tvos/RumbleTV.xcodeproj/
 tvos/Local.xcconfig
 tvos/build/
 
-# Local script: builds and installs on this machine's Apple TV
+# Claude Code's local session files
+.claude/
+
+# Old local script (replaced by tools/tvos/port and the installer)
 /install_tv.sh

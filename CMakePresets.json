@@ -1,0 +1,48 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 31, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "mac",
+      "displayName": "Mac (Ninja)",
+      "description": "The headless runner (rumble) and the ctest checks",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/mac"
+    },
+    {
+      "name": "xcode",
+      "displayName": "Mac (Xcode)",
+      "description": "Generates build/xcode/PokemonRumbleTV.xcodeproj; builds the installer (RumbleTVInstaller)",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/xcode"
+    },
+    {
+      "name": "tvos",
+      "displayName": "Apple TV device (Xcode)",
+      "description": "The Apple TV app; pass -DRUMBLE_DEVELOPMENT_TEAM=<Team ID> to sign for a device",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/tvos",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "tvOS",
+        "CMAKE_OSX_SYSROOT": "appletvos"
+      }
+    },
+    {
+      "name": "tvos-sim",
+      "displayName": "Apple TV simulator (Xcode)",
+      "description": "The Apple TV app for the simulator; no signing needed",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/tvos-sim",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "tvOS",
+        "CMAKE_OSX_SYSROOT": "appletvsimulator"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "mac", "configurePreset": "mac" },
+    { "name": "xcode", "configurePreset": "xcode", "configuration": "Debug" },
+    { "name": "tvos", "configurePreset": "tvos", "configuration": "Release", "targets": ["RumbleTV"] },
+    { "name": "tvos-sim", "configurePreset": "tvos-sim", "configuration": "Debug", "targets": ["RumbleTV"] }
+  ]
+}

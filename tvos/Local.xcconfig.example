@@ -1,4 +1,5 @@
 // Copy to Local.xcconfig (tvos/tools/build.sh does it the first time) and fill in.
+// Only tvos/tools/build.sh reads it; tools/tvos/port takes --team and --bundle-id.
 // The app's bundle ID: keep it the same from build to build, or the saves kept under
 // the old one are out of reach.
 RUMBLE_BUNDLE_ID = com.example.rumble-tv

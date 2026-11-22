@@ -44,10 +44,16 @@ GROUPS = {
             "src/RVL_SDK/os/OSCrc.c"],
 }
 
-# Units that include files tools/import_wad.py generates from the user's game files.
+# Units that include files tools/import_wad.py generates from the user's game files (paths in its
+# generated folder: build/generated, or --generated).
 NEEDS_GAME_FILES = {
-    "src/game/ui/SystemMessageArchive.cpp": ROOT / "build/generated/include/system_message.inc",
+    "src/game/ui/SystemMessageArchive.cpp": "include/system_message.inc",
 }
+
+
+def waiting_for_game_files(path: Path, generated: Path) -> bool:
+    needed = NEEDS_GAME_FILES.get(str(path.relative_to(DECOMP)))
+    return needed is not None and not (generated / needed).exists()
 
 def read_flags():
     """(common, c, cxx) flags from port/compile_flags.txt, with paths made absolute."""
@@ -113,11 +119,12 @@ def main():
     parser.add_argument("--sites", type=int, default=0, help="also list the N most repeated error locations")
     parser.add_argument("--list", action="store_true", help="print the units to compile (absolute paths, ';'-separated) and exit")
     parser.add_argument("--report", type=Path, default=ROOT / "build/compile_check.json")
+    parser.add_argument("--generated", type=Path, default=ROOT / "build/generated",
+                        help="the folder tools/import_wad.py generated into (CMake's RUMBLE_GENERATED_DIR)")
     args = parser.parse_args()
 
     if args.list:
-        paths = [str(path) for _, path in units(args.only)
-                 if not (str(path.relative_to(DECOMP)) in NEEDS_GAME_FILES and not NEEDS_GAME_FILES[str(path.relative_to(DECOMP))].exists())]
+        paths = [str(path) for _, path in units(args.only) if not waiting_for_game_files(path, args.generated)]
         print(";".join(paths), end="")
         return 0
 
@@ -128,8 +135,7 @@ def main():
         return code
 
     items = list(units(args.only))
-    waiting = [str(path.relative_to(DECOMP)) for _, path in items
-               if str(path.relative_to(DECOMP)) in NEEDS_GAME_FILES and not NEEDS_GAME_FILES[str(path.relative_to(DECOMP))].exists()]
+    waiting = [str(path.relative_to(DECOMP)) for _, path in items if waiting_for_game_files(path, args.generated)]
     items = [item for item in items if str(item[1].relative_to(DECOMP)) not in waiting]
     totals = collections.Counter()
     passed = collections.Counter()

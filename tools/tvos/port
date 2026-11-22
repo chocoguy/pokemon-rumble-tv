@@ -1,0 +1,593 @@
+#!/usr/bin/env python3
+"""Builds the Apple TV app from your own game files: the entry point that port.json names.
+
+    tools/tvos/port check   [options]    what this Mac is missing, and whether the game files are the right ones
+    tools/tvos/port prepare [options]    imports the game files: copies the WAD's decrypted contents, checks the
+                                         game's version, and extracts what the build compiles in
+    tools/tvos/port build   [options]    prepares if it's needed, then builds and signs Rumble.app
+    tools/tvos/port install --device D   installs the built app on the Apple TV (it never starts it)
+    tools/tvos/port installed --device D what's installed on the Apple TV: version, build
+    tools/tvos/port clean   [options]    removes the build and everything prepare made
+
+Options, each also a field of --context:
+    --game PATH        Dolphin's user folder (default: ~/Library/Application Support/Dolphin), after
+                       Tools > Install WAD; or a folder of the decrypted .app content files
+    --team ID          the Apple Developer team that signs the app (default: the one signed in to Xcode,
+                       a paid one if there is one). A free personal team works; its apps open for 7 days.
+    --bundle-id ID     default: com.pokemonrumbletv.<team ID>
+    --device ID        the Apple TV (xcrun devicectl list devices)
+    --platform tvos    the only platform
+    --work-dir DIR     where everything goes (default: build/port)
+    --context FILE     the same as JSON: {"team", "bundleId", "device", "workDir", "inputs": {"game"}}
+    --json             one JSON event per line on stdout; the tools' own output goes to stderr
+
+Rumble TV Installer.app runs it with --json, with Xcode's /usr/bin/python3 -I. Only Python 3's standard
+library is used (3.9 or newer).
+"""
+import argparse
+import contextlib
+import datetime
+import hashlib
+import importlib.util
+import json
+import os
+import platform
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+ROOT = Path(__file__).resolve().parents[2]
+DECOMP = ROOT / 'pokemon-rumble-decomp-tv'
+CONFIGURATION = 'Release'
+# Per --platform: the CMake preset, the SDK, the app's target and file, the Xcode project's folder in the
+# work folder, the build's result, and what to call the device.
+PLATFORMS = {
+    'tvos': {'preset': 'tvos', 'sdk': 'appletvos', 'target': 'RumbleTV', 'app': 'Rumble.app', 'project': 'xcode',
+             'result': 'result.json', 'device': 'Apple TV', 'name': 'tvOS'},
+}
+DOLPHIN = Path.home() / 'Library' / 'Application Support' / 'Dolphin'
+
+MIN_XCODE = (27, 0)
+MIN_CMAKE = (3, 31)
+
+JSON = False
+
+
+class Failure(Exception):
+    def __init__(self, code: str, message: str, fix: str = ''):
+        super().__init__(message)
+        self.code, self.message, self.fix = code, message, fix
+
+
+# Events --------------------------------------------------------------------------------------------
+
+def emit(event: str, **fields) -> None:
+    if JSON:
+        print(json.dumps({'event': event, **fields}), flush=True)
+        return
+    if event == 'stage':
+        print(f"==> {fields['label']}", flush=True)
+    elif event == 'check':
+        mark = 'ok ' if fields['ok'] else 'NO '
+        print(f"{mark} {fields['label']}: {fields['detail']}", flush=True)
+        if not fields['ok'] and fields.get('fix'):
+            print(f"    {fields['fix']}", flush=True)
+    elif event == 'error':
+        print(f"error: {fields['message']}", file=sys.stderr, flush=True)
+        if fields.get('fix'):
+            print(f"  {fields['fix']}", file=sys.stderr, flush=True)
+    elif event == 'warning':
+        print(f"warning: {fields['message']}", flush=True)
+    elif event == 'result':
+        print(f"Built {fields['app']}", flush=True)
+        if fields.get('expires'):
+            print(f"Its profile expires {fields['expires'][:10]}.", flush=True)
+    elif event == 'installed':
+        if 'present' in fields:
+            print(f"Installed: {fields.get('version')} ({fields.get('build')})" if fields['present']
+                  else 'Not installed.', flush=True)
+    elif event == 'note':
+        print(fields['message'], flush=True)
+
+
+def stage(name: str, label: str) -> None:
+    emit('stage', id=name, label=label)
+
+
+def run(argv: list, **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run([str(a) for a in argv], capture_output=True, text=True, **kwargs)
+
+
+def stream(argv: list, cwd: Optional[Path] = None, on_line=None) -> int:
+    """Runs a tool with its output passed to stderr (stdout is the events' in --json mode)."""
+    process = subprocess.Popen([str(a) for a in argv], cwd=cwd, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, errors='replace')
+    for line in process.stdout:
+        sys.stderr.write(line)
+        if on_line:
+            on_line(line.rstrip('\n'))
+    return process.wait()
+
+
+# Context -------------------------------------------------------------------------------------------
+
+class Context:
+    def __init__(self, args):
+        data = {}
+        if args.context:
+            data = json.loads(Path(args.context).expanduser().read_text())
+        inputs = data.get('inputs') or {}
+        self.game = args.game or inputs.get('game') or ''
+        self.team = args.team or data.get('team') or ''
+        self.bundle_id = args.bundle_id or data.get('bundleId') or ''
+        self.device = getattr(args, 'device', None) or data.get('device') or ''
+        self.platform = args.platform or data.get('platform') or 'tvos'
+        if self.platform not in PLATFORMS:
+            raise Failure('platform', f'Unknown platform {self.platform}.', 'This port builds for the Apple TV only: --platform tvos.')
+        self.p = PLATFORMS[self.platform]
+        work = args.work_dir or data.get('workDir') or str(ROOT / 'build' / 'port')
+        self.work = Path(work).expanduser().resolve()
+        self.free_team = False
+
+    def signing(self) -> None:
+        """Fills in the team and bundle ID. A free personal team works, but its apps open for 7 days."""
+        teams = xcode_teams()
+        if not self.team:
+            if not teams:
+                raise Failure('xcode-account', 'No Apple ID is signed in to Xcode.',
+                              'Sign in under Xcode > Settings > Accounts (a free Apple ID works), or pass --team.')
+            paid = [t for t in teams if not t['free']]
+            self.team = (paid or teams)[0]['id']
+        known = next((t for t in teams if t['id'] == self.team), None)
+        if not known:
+            raise Failure('xcode-account', f"Team {self.team} isn't signed in to Xcode.",
+                          'Sign in to its Apple ID under Xcode > Settings > Accounts.')
+        self.free_team = known['free']
+        if not self.bundle_id:
+            self.bundle_id = f'com.pokemonrumbletv.{self.team.lower()}'
+
+
+def xcode_teams() -> List[dict]:
+    """The teams of the Apple IDs signed in to Xcode (Settings > Accounts)."""
+    exported = run(['defaults', 'export', 'com.apple.dt.Xcode', '-'])
+    try:
+        prefs = plistlib.loads(exported.stdout.encode()) if exported.returncode == 0 else {}
+    except Exception:
+        prefs = {}
+    teams = []
+    for account in prefs.get('IDEProvisioningTeamByIdentifier', {}).values():
+        for team in account:
+            if team.get('teamID') and all(t['id'] != team['teamID'] for t in teams):
+                teams.append({'id': team['teamID'], 'name': team.get('teamName', ''),
+                              'free': bool(team.get('isFreeProvisioningTeam'))})
+    return teams
+
+
+# The game files ------------------------------------------------------------------------------------
+
+def importer():
+    """tools/import_wad.py, loaded as a module: the import is the same as the Terminal's."""
+    spec = importlib.util.spec_from_file_location('import_wad', ROOT / 'tools' / 'import_wad.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_decomp() -> None:
+    if not (DECOMP / 'config' / 'targets' / 'wpse-v1.json').is_file():
+        raise Failure('decomp-missing', 'The pokemon-rumble-decomp-tv submodule is missing.',
+                      'git submodule update --init')
+
+
+def find_content(ctx: Context, imp) -> dict:
+    """Where the decrypted contents are: {'content': folder, 'dolphin': Dolphin's user folder or None}."""
+    given = Path(ctx.game).expanduser().resolve() if ctx.game else DOLPHIN
+    if not given.exists():
+        if ctx.game:
+            raise Failure('game-missing', f'{given} does not exist.')
+        raise Failure('game-missing', "Dolphin's folder isn't on this Mac, so the game isn't installed in it.",
+                      'Install Dolphin, open your WAD with Tools > Install WAD, then try again. '
+                      'Or choose a folder of the decrypted .app content files.')
+    if any(p.suffix.lower() == '.app' and p.is_file() for p in given.iterdir()):
+        return {'content': given, 'dolphin': None}
+    for base in (given, given.parent if given.name == 'Wii' else None):
+        if base is None:
+            continue
+        content = imp.find_dolphin_content(str(base))
+        if content is not None:
+            return {'content': content, 'dolphin': base}
+    if (given / 'Wii').is_dir() or given == DOLPHIN:
+        raise Failure('game-not-installed', "Pokémon Rumble isn't installed in Dolphin.",
+                      'In Dolphin: Tools > Install WAD, and pick your Pokémon Rumble (USA) WAD. Then try again.')
+    raise Failure('game-unreadable', f"{given} holds no game contents.",
+                  "Choose Dolphin's user folder (the one holding Wii), or a folder of the decrypted .app files.")
+
+
+def stamp_of(content: Path) -> dict:
+    files = sorted(p for p in content.iterdir() if p.is_file() and p.suffix.lower() in ('.app', '.tmd'))
+    digest = hashlib.sha1()
+    for path in files:
+        status = path.stat()
+        digest.update(f'{path.name}:{status.st_size}:{int(status.st_mtime)}\n'.encode())
+    return {'source': str(content), 'files': len(files), 'digest': digest.hexdigest()}
+
+
+def prepared_ok(record: Optional[dict]) -> bool:
+    return bool(record) and Path(record['content']).is_dir() and Path(record['generated'], 'include',
+                                                                       'system_message.inc').is_file()
+
+
+def prepare(ctx: Context) -> dict:
+    """Imports the game files into the work folder. Does nothing when the same files were imported before."""
+    require_decomp()
+    imp = importer()
+    record_path = ctx.work / 'prepared.json'
+    stage('find', 'Finding your game files')
+    found = find_content(ctx, imp)
+    stamp = stamp_of(found['content'])
+    try:
+        record = json.loads(record_path.read_text())
+    except (OSError, ValueError):
+        record = None
+    if prepared_ok(record) and record.get('stamp') == stamp:
+        emit('note', message='The game files are already imported.')
+        return record
+
+    stage('copy', "Copying the game's contents")
+    content = ctx.work / 'content'
+    if found['content'].resolve() == content.resolve():
+        raise Failure('game-unreadable', 'That folder is where the import puts the game files.',
+                      "Choose Dolphin's user folder, or a folder of the decrypted .app files outside the work folder.")
+    generated = ctx.work / 'generated'
+    dol = ctx.work / 'main.dol'
+    shutil.rmtree(content, ignore_errors=True)
+    shutil.rmtree(generated, ignore_errors=True)
+    args = argparse.Namespace(source=str(found['content']), dolphin_dir=str(found['dolphin']) if found['dolphin'] else None,
+                              out=str(content), dol=str(dol), generated=str(generated))
+    # The importer prints what it copies; that goes to the log (stderr), not the events.
+    with contextlib.redirect_stdout(sys.stderr):
+        status = imp.run(args)
+
+    stage('executable', "Checking the game's version")
+    if status != 0 or not dol.is_file():
+        raise Failure('wrong-version', "These aren't the files of Pokémon Rumble, USA WiiWare release (WPSE), title version 1.",
+                      'The port needs that release: install its WAD in Dolphin with Tools > Install WAD.')
+    if not (generated / 'include' / 'system_message.inc').is_file():
+        raise Failure('extract-failed', "Couldn't extract the game's message archive.", 'The full log is above.')
+    tmd = content / 'title.tmd'
+    if tmd.is_file():
+        missing = [index for cid, index, ctype, _, _ in imp.tmd_contents(tmd.read_bytes())
+                   if not (content / f'{cid:08x}.app').is_file()]
+        if missing:
+            raise Failure('shared-missing', f"Contents {', '.join(map(str, missing))} are missing: the Home Button "
+                          "Menu's files, which Dolphin keeps in Wii/shared1.",
+                          "Install the WAD with Dolphin's Tools > Install WAD (it adds them), then try again.")
+
+    record = {'stamp': stamp, 'content': str(content), 'generated': str(generated),
+              'executableSha256': hashlib.sha256(dol.read_bytes()).hexdigest()}
+    record_path.write_text(json.dumps(record, indent=2) + '\n')
+    emit('prepared', content=str(content), generated=str(generated))
+    return record
+
+
+# The version -----------------------------------------------------------------------------------------
+
+def source_version() -> dict:
+    """The release being built, from git: the tag (v1.0.0 -> 1.0.0) when HEAD is one, else the last tag's
+    version (0.0.1 before the first), and the commit."""
+    commit = run(['git', '-C', ROOT, 'rev-parse', '--short', 'HEAD'])
+    described = run(['git', '-C', ROOT, 'describe', '--tags', '--abbrev=0'])
+    tag = described.stdout.strip() if described.returncode == 0 else ''
+    found = re.fullmatch(r'v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)', tag)
+    return {'version': found.group(1) if found else '0.0.1',
+            'commit': commit.stdout.strip() if commit.returncode == 0 else ''}
+
+
+# Check ---------------------------------------------------------------------------------------------
+
+def version_of(text: str) -> tuple:
+    found = re.search(r'(\d+)\.(\d+)', text)
+    return (int(found.group(1)), int(found.group(2))) if found else (0, 0)
+
+
+def cmd_check(ctx: Context) -> int:
+    results = []
+
+    def check(name: str, label: str, ok: bool, detail: str, fix: str = '') -> None:
+        results.append(ok)
+        emit('check', id=name, label=label, ok=bool(ok), detail=detail, fix='' if ok else fix)
+
+    check('mac', 'Apple silicon Mac', platform.machine() == 'arm64', platform.machine(),
+          'The game is built for arm64 only.')
+
+    xcode = run(['xcodebuild', '-version']) if shutil.which('xcodebuild') else None
+    xcode_line = xcode.stdout.splitlines()[0] if xcode and xcode.returncode == 0 and xcode.stdout else ''
+    check('xcode', 'Xcode 27 or later', version_of(xcode_line) >= MIN_XCODE, xcode_line or 'not found',
+          'Install Xcode from the App Store, open it once, then: sudo xcode-select -s /Applications/Xcode.app')
+
+    sdks = run(['xcodebuild', '-showsdks', '-json']) if xcode_line else None
+    found = [s['canonicalName'] for s in json.loads(sdks.stdout or '[]')
+             if s.get('platform') == ctx.p['sdk']] if sdks and sdks.returncode == 0 else []
+    check(f"{ctx.platform}-platform", f"The {ctx.p['name']} platform", bool(found),
+          found[-1] if found else 'not installed',
+          f"Xcode > Settings > Components, or: xcodebuild -downloadPlatform {ctx.p['name']}")
+
+    cmake = run(['cmake', '--version']) if shutil.which('cmake') else None
+    cmake_line = cmake.stdout.splitlines()[0] if cmake and cmake.returncode == 0 else ''
+    check('cmake', 'CMake 3.31 or later', version_of(cmake_line) >= MIN_CMAKE, cmake_line or 'not found',
+          'Download CMake from cmake.org and drag CMake.app to Applications, or: brew install cmake')
+
+    present = (DECOMP / 'config' / 'targets' / 'wpse-v1.json').is_file()
+    check('submodule', 'The decomp submodule', present, 'present' if present else 'missing',
+          'git submodule update --init')
+
+    teams = xcode_teams()
+    if ctx.team:
+        known = next((t for t in teams if t['id'] == ctx.team), None)
+        ok = bool(known)
+        detail = (f"{known['name']} ({known['id']})" + (', a free personal team: its apps open for 7 days'
+                                                         if known['free'] else '')
+                  if known else f'{ctx.team} is not signed in to Xcode')
+    else:
+        paid = [t for t in teams if not t['free']]
+        best = (paid or teams or [None])[0]
+        ok = bool(best)
+        detail = (f"{best['name']} ({best['id']})" + (', a free personal team: its apps open for 7 days'
+                                                       if best['free'] else '')) if best else 'no Apple ID'
+    check('account', 'An Apple ID in Xcode', ok, detail,
+          'Sign in under Xcode > Settings > Accounts. A free Apple ID works, but its apps open for 7 days; '
+          'a paid Apple Developer membership lasts a year.')
+
+    if ctx.game or DOLPHIN.is_dir():
+        try:
+            require_decomp()
+            located = find_content(ctx, importer())
+            check('game', 'Your game files', True, str(located['content']))
+        except Failure as failure:
+            check('game', 'Your game files', False, failure.message, failure.fix)
+
+    return 0 if all(results) else 1
+
+
+# Build ---------------------------------------------------------------------------------------------
+
+# What a failed build said, and what to tell the user. The first that matches wins.
+KNOWN_FAILURES = [
+    (r'No Accounts?\b|No Account for Team|not signed in',
+     'xcode-account', "Xcode isn't signed in to the team's Apple ID.", 'Sign in under Xcode > Settings > Accounts.'),
+    (r'has no devices|no devices from which',
+     'no-devices', 'The team has no Apple TV registered.',
+     "Pair the Apple TV in Xcode's Devices window, and pass --device with it switched on and awake."),
+    (r'(?:App ID|identifier).*(?:is not available|cannot be registered|already in use)',
+     'bundle-id-taken', 'The bundle ID {bundle} belongs to another team.', 'Pass a different --bundle-id.'),
+    (r'maximum number of apps|app ID limit',
+     'free-app-limit', 'A free personal team can have only a few apps installed from Xcode at once.',
+     'Delete another app you installed with this Apple ID from the Apple TV, or use a paid team.'),
+    (r'[Nn]o (?:signing certificate|certificate)',
+     'certificate', 'No development certificate for the team is on this Mac.',
+     'Xcode > Settings > Accounts: select the team, Manage Certificates, and add an Apple Development certificate.'),
+    (r'No profiles? for',
+     'no-profile', "Xcode couldn't make a provisioning profile for the app.",
+     "Check the team in Xcode > Settings > Accounts, and that the Apple TV is paired."),
+    (r'No game contents in|system_message\.inc',
+     'game-unreadable', "The imported game files aren't usable.", 'Run: tools/tvos/port clean, then build again.'),
+]
+
+
+def explain(lines: List[str], ctx: Context) -> Failure:
+    errors = [line for line in lines if re.search(r'\berror\b', line, re.IGNORECASE)] or lines[-20:]
+    text = '\n'.join(errors)
+    for pattern, code, message, fix in KNOWN_FAILURES:
+        if re.search(pattern, text):
+            return Failure(code, message.format(bundle=ctx.bundle_id), fix.format(bundle=ctx.bundle_id))
+    first = next((line.strip() for line in errors if line.strip()), 'the build failed')
+    return Failure('build-failed', first[:400], 'The full log is above.')
+
+
+def profile_of(app: Path) -> dict:
+    decoded = run(['security', 'cms', '-D', '-i', app / 'embedded.mobileprovision'])
+    if decoded.returncode != 0:
+        return {}
+    try:
+        return plistlib.loads(decoded.stdout.encode())
+    except Exception:
+        return {}
+
+
+def hardware_udid(device: str) -> str:
+    """The UDID a provisioning profile lists for `device`, which may be devicectl's own identifier (they
+    differ), its name or the UDID itself. Empty if devicectl doesn't know it."""
+    out = Path(os.environ.get('TMPDIR', '/tmp')) / f'rumble-devices-{os.getpid()}.json'
+    run(['xcrun', 'devicectl', 'list', 'devices', '--json-output', out])
+    try:
+        entries = json.loads(out.read_text())['result']['devices']
+    except (OSError, ValueError, KeyError):
+        entries = []
+    finally:
+        if out.exists():
+            out.unlink()
+    for entry in entries:
+        hardware = entry.get('hardwareProperties', {})
+        names = {entry.get('identifier'), hardware.get('udid'), entry.get('deviceProperties', {}).get('name')}
+        if device in names:
+            return hardware.get('udid', '')
+    return ''
+
+
+def cmd_build(ctx: Context) -> int:
+    require_decomp()
+    ctx.signing()
+    prepared = prepare(ctx)
+
+    stage('configure', 'Setting up the Xcode project')
+    project = ctx.work / ctx.p['project']
+    target = ctx.p['target']
+    stamp = source_version()
+    configure = ['cmake', '--preset', ctx.p['preset'], '-B', project,
+                 f"-DRUMBLE_CONTENT_DIR={prepared['content']}",
+                 f"-DRUMBLE_GENERATED_DIR={prepared['generated']}",
+                 f"-DRUMBLE_VERSION={stamp['version']}", f"-DRUMBLE_COMMIT={stamp['commit']}",
+                 f'-DRUMBLE_DEVELOPMENT_TEAM={ctx.team}', f'-DRUMBLE_BUNDLE_ID={ctx.bundle_id}']
+    lines: List[str] = []
+    if stream(configure, cwd=ROOT, on_line=lines.append) != 0:
+        raise explain(lines, ctx)
+
+    stage('compile', 'Compiling the game')
+    stats_path = ctx.work / 'build-stats.json'
+    try:
+        expected = json.loads(stats_path.read_text()).get('steps', 0)
+    except (OSError, ValueError):
+        expected = 0
+    state = {'steps': 0, 'stage': 'compile'}
+    lines = []
+
+    def on_line(line: str) -> None:
+        lines.append(line)
+        if len(lines) > 4000:
+            del lines[:2000]
+        if re.match(r'(CompileC|Ld|Libtool) ', line):
+            state['steps'] += 1
+            if expected and state['steps'] % 10 == 0:
+                emit('progress', fraction=round(min(state['steps'] / expected, 0.99), 3))
+        # Xcode's line: CodeSign <path>.app (in target '<target>' from project '...')
+        if line.startswith('CodeSign ') and state['stage'] != 'sign' and f"target '{target}'" in line:
+            state['stage'] = 'sign'
+            stage('sign', 'Signing the app')
+
+    build = ['cmake', '--build', project, '--config', CONFIGURATION, '--target', target,
+             '--', '-sdk', ctx.p['sdk'], '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration']
+    if stream(build, cwd=ROOT, on_line=on_line) != 0:
+        raise explain(lines, ctx)
+    if state['steps']:
+        stats_path.write_text(json.dumps({'steps': state['steps']}) + '\n')
+
+    app = project / 'tvos' / f"{CONFIGURATION}-{ctx.p['sdk']}" / ctx.p['app']
+    if not (app / 'content').is_dir():
+        raise Failure('not-built', "The build finished, but the app is missing the game's contents.", 'Build again.')
+    if not (app / 'embedded.mobileprovision').is_file():
+        raise Failure('not-signed', "The build finished, but the app isn't signed for a device.",
+                      'Check the team in Xcode > Settings > Accounts.')
+    profile = profile_of(app)
+    expires = profile.get('ExpirationDate')
+    devices = profile.get('ProvisionedDevices') or []
+    udid = hardware_udid(ctx.device) if ctx.device and devices else ''
+    if udid and udid not in devices:
+        emit('warning', code='device-not-in-profile',
+             message=f"The {ctx.p['device']} {ctx.device} is not in the app's profile, so it will refuse the install.",
+             fix="Pair it in Xcode's Devices window with it awake, then build again.")
+    if ctx.free_team:
+        emit('note', message='Signed by a free personal team: the app opens for 7 days, then install it again to renew.')
+    size = sum(f.stat().st_size for f in app.rglob('*') if f.is_file())
+    result = {'app': str(app), 'bundleId': ctx.bundle_id, 'team': ctx.team, 'freeTeam': ctx.free_team,
+              'sizeBytes': size, **stamp,
+              'expires': expires.replace(tzinfo=datetime.timezone.utc).isoformat() if expires else None,
+              'devices': devices}
+    (ctx.work / ctx.p['result']).write_text(json.dumps(result, indent=2) + '\n')
+    emit('result', **result)
+    return 0
+
+
+def cmd_prepare(ctx: Context) -> int:
+    prepare(ctx)
+    return 0
+
+
+def cmd_install(ctx: Context) -> int:
+    if not ctx.device:
+        raise Failure('device-missing', f"No {ctx.p['device']} given.", 'Pass --device (xcrun devicectl list devices).')
+    try:
+        result = json.loads((ctx.work / ctx.p['result']).read_text())
+    except (OSError, ValueError):
+        raise Failure('not-built', 'The app has not been built yet.', 'Run: tools/tvos/port build')
+    stage('install', f"Installing on the {ctx.p['device']}")
+    if stream(['xcrun', 'devicectl', 'device', 'install', 'app', '--device', ctx.device, result['app']]) != 0:
+        raise Failure('install-failed', f"The {ctx.p['device']} didn't take the app.",
+                      "Wake it up, check it's paired in Xcode's Devices window, and try again.")
+    emit('note', message=f"Installed. Open Rumble from the {ctx.p['device']}'s Home screen.")
+    return 0
+
+
+def cmd_installed(ctx: Context) -> int:
+    """Emits 'installed' with what's on --device: present, version, build."""
+    if not ctx.device:
+        raise Failure('device-missing', f"No {ctx.p['device']} given.", 'Pass --device (xcrun devicectl list devices).')
+    try:
+        bundle = json.loads((ctx.work / ctx.p['result']).read_text())['bundleId']
+    except (OSError, ValueError, KeyError):
+        ctx.signing()
+        bundle = ctx.bundle_id
+    out = ctx.work / f'apps-{ctx.device}.json'
+    listed = run(['xcrun', 'devicectl', 'device', 'info', 'apps', '--device', ctx.device,
+                  '--bundle-id', bundle, '--json-output', out])
+    try:
+        apps = json.loads(out.read_text())['result']['apps']
+    except (OSError, ValueError, KeyError):
+        raise Failure('device-unreachable', f"Couldn't ask the {ctx.p['device']} what's installed.",
+                      "Wake it up and check it's paired in Xcode's Devices window." + (
+                          f" ({listed.stderr.strip().splitlines()[-1]})" if listed.stderr.strip() else ''))
+    finally:
+        if out.exists():
+            out.unlink()
+    found = next((a for a in apps if a.get('bundleIdentifier') == bundle), None)
+    if found:
+        emit('installed', present=True, bundleId=bundle, version=found.get('version'),
+             build=found.get('bundleVersion'))
+    else:
+        emit('installed', present=False, bundleId=bundle)
+    return 0
+
+
+def cmd_clean(ctx: Context) -> int:
+    # Only what this script makes: --work-dir may be a folder that holds other things.
+    for name in ('xcode', 'content', 'generated'):
+        shutil.rmtree(ctx.work / name, ignore_errors=True)
+    for name in ('prepared.json', 'result.json', 'build-stats.json', 'main.dol'):
+        path = ctx.work / name
+        if path.exists():
+            path.unlink()
+    emit('note', message=f'Removed the build and the imported game files from {ctx.work}.')
+    return 0
+
+
+def main() -> int:
+    global JSON
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('command', choices=('check', 'prepare', 'build', 'install', 'installed', 'clean'))
+    parser.add_argument('--context')
+    parser.add_argument('--game')
+    parser.add_argument('--team')
+    parser.add_argument('--bundle-id')
+    parser.add_argument('--device')
+    parser.add_argument('--platform', choices=tuple(PLATFORMS))
+    parser.add_argument('--work-dir')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args()
+    JSON = args.json
+    try:
+        ctx = Context(args)
+        ctx.work.mkdir(parents=True, exist_ok=True)
+        if args.command == 'check':
+            return cmd_check(ctx)
+        if args.command == 'prepare':
+            return cmd_prepare(ctx)
+        if args.command == 'build':
+            return cmd_build(ctx)
+        if args.command == 'install':
+            return cmd_install(ctx)
+        if args.command == 'installed':
+            return cmd_installed(ctx)
+        return cmd_clean(ctx)
+    except Failure as failure:
+        emit('error', code=failure.code, message=failure.message, fix=failure.fix)
+        return 1
+    except KeyboardInterrupt:
+        emit('error', code='cancelled', message='Cancelled.')
+        return 130
+
+
+if __name__ == '__main__':
+    sys.exit(main())
