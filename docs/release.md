@@ -1,16 +1,23 @@
 # Releasing
 
-A release is a git tag (`v1.0.0`) and a GitHub release with two files:
-- **`RumbleTVInstaller-<version>.zip`:** the installer, signed with a Developer ID and notarized.
-- **`appcast.xml`:** Sparkle's feed. Installers read it from `releases/latest/download/appcast.xml` to update themselves.
+A release is a git tag (`v2.0.0`) and a GitHub release with one file, **`RumbleTVInstaller.zip`**: the installer, signed with a Developer ID and notarized.
 
 Players' installers see the new tag on GitHub, build the game from it on their Mac, and reinstall it on every Apple TV it's installed on.
 
 `tools/release.sh` does all of it on your Mac. Nothing signs or publishes in CI.
 
+## The major version is the installer
+
+- **`N.0.0` is a new installer.** `release.sh` builds, signs, notarizes and staples it, and attaches it.
+- **`N.x.y` is a game update only.** `release.sh` doesn't build the installer: it downloads `vN.0.0`'s `RumbleTVInstaller.zip` and attaches it again, unchanged, so the latest release always has the installer (and `releases/latest` links keep working). It stops if `vN.0.0` has no installer zip.
+- An installer builds only the releases of its own major version. When a newer major is on GitHub, it says a new installer is available (an alert once per launch, and a banner on the Game and Updates screens) and links to that release. Game updates wait until the player uses the new installer; **Reinstall** still works, so free-account installs can be renewed.
+- The installer doesn't update itself (no Sparkle). Players download a new one by hand and replace the old one; everything it made is in `~/Library/Application Support/Rumble TV Installer`, so nothing is lost.
+- `port.json`'s `minAppVersion` is set to `N.0.0` only for 1.x installers, which still read it: they stop before building a newer major.
+- **Transition:** v1.0.0 shipped a Sparkle installer. The first release with the new installer must be `2.0.0`. 1.x installers then refuse to build it, but their Check for Updates… finds nothing: players download the 2.0.0 installer by hand.
+
 ## One-time setup (shared with Frontline Rewritten)
 
-This port signs, notarizes and updates its installer with the same credentials as Frontline Rewritten, so if Frontline releases work on this Mac, so do these:
+This port signs and notarizes its installer with the same credentials as Frontline Rewritten, so if Frontline releases work on this Mac, so do these:
 
 1. **Developer ID certificate** for team `USLHQ524FW`:
    - `security find-identity -v -p codesigning` lists `Developer ID Application: … (USLHQ524FW)`.
@@ -21,42 +28,37 @@ This port signs, notarizes and updates its installer with the same credentials a
      xcrun notarytool store-credentials frontline-notary --apple-id <your Apple ID> --team-id USLHQ524FW
      ```
      It asks for an app-specific password: account.apple.com → Sign-In and Security → App-Specific Passwords.
-3. **Sparkle's signing key:**
-   - The private key is in your login keychain ("Private key for signing Sparkle updates"). It's the same one Frontline Rewritten uses.
-   - The public key, `zXdaNL5/ThT4IrxiYLM28IufQy6TRClWWwbO3oQaZh4=`, is in `apps/installer/sparkle-public-key.txt`.
-   - On a new Mac, restore the private key from your backup with `generate_keys -f <file>`. Sparkle's tools are in `build/xcode/_deps/sparkle-src/bin` after one installer build: `cmake --preset xcode && cmake --build build/xcode --target RumbleTVInstaller`.
-   - **Without the private key, installers already out there can't take updates**, for this port and Frontline both.
-4. **GitHub CLI:** `gh auth status` says you're signed in (`brew install gh`, then `gh auth login`).
+3. **GitHub CLI:** `gh auth status` says you're signed in (`brew install gh`, then `gh auth login`).
 
 ## Each release
 
 From a clean `main` that's pushed, with `pokemon-rumble-decomp-tv`'s commit pushed too:
 
 ```sh
-tools/release.sh 1.0.0
+tools/release.sh 2.0.0
 ```
 
 It does this, in order:
-1. Checks the above.
+1. Checks the above. The Developer ID and notarytool profile are needed only for `N.0.0`. For `N.x.y`, it checks that `vN.0.0` has the installer zip on GitHub.
 2. Opens your editor for the release notes (Markdown), or takes `--notes <file>`.
-3. Sets `port.json`'s `version` (and commits "Release 1.0.0" if it changed), then tags `v1.0.0`.
-4. Builds Rumble TV Installer Release, stamped 1.0.0 (build number 10000), with Sparkle's public key.
-5. Signs Sparkle's parts inside-out, then the app (hardened runtime, timestamp).
-6. Notarizes the zip, staples the app, checks it with `spctl`, and zips it again into `build/dist/1.0.0/`.
-7. Makes `appcast.xml` with Sparkle's `generate_appcast` (signed with your key, release notes embedded).
-8. Asks before pushing, then pushes `main` and the tag, and creates the GitHub release with both files.
+3. Sets `port.json`'s `version` (and `minAppVersion` to `N.0.0`), commits "Release 2.0.0" if it changed, then tags `v2.0.0`.
+4. For `N.0.0`:
+   - builds Rumble TV Installer Release, stamped 2.0.0 (build number 20000)
+   - signs the app (hardened runtime, timestamp)
+   - notarizes the zip, staples the app, checks it with `spctl`, and zips it again into `build/dist/2.0.0/`
+5. For `N.x.y`: downloads `vN.0.0`'s `RumbleTVInstaller.zip` into `build/dist/<version>/`.
+6. Asks before pushing, then pushes `main` and the tag, and creates the GitHub release with the zip.
 
 If you answer no at the push, the commit and tag stay local. The script prints how to undo them.
 
 **Options:**
-- **Release candidates:** `tools/release.sh 1.1.0-rc1 --prerelease`. GitHub marks it a pre-release, so players don't see it (their installers skip pre-releases, and `latest/download` skips them for Sparkle). To test one, turn on pre-releases in your installer:
+- **Release candidates:** `tools/release.sh 2.1.0-rc1 --prerelease`. GitHub marks it a pre-release, so players don't see it (their installers skip pre-releases). `3.0.0-rc1` builds a new installer, like `3.0.0`. To test one, turn on pre-releases in your installer:
   ```sh
   defaults write com.vanillacoffeesoft.RumbleTVInstaller includePrereleases -bool YES
   ```
-- **A release that needs a newer installer:** `--min-app 1.1.0` sets `port.json`'s `minAppVersion`. Older installers then stop before building it and ask to update themselves first.
-- **Dry run:** `--dry-run` runs the checks (reporting, not stopping) and builds an ad hoc installer into `build/dist`. It signs, notarizes, commits, tags and pushes nothing.
+- **Dry run:** `--dry-run` runs the checks (reporting, not stopping) and, for `N.0.0`, builds an ad hoc installer into `build/dist`. It signs, notarizes, commits, tags and pushes nothing.
 
 ## Versions
 - Tags are `v` plus a semantic version.
 - The apps' `CFBundleShortVersionString` is its numeric part, and `CFBundleVersion` is `major×10000 + minor×100 + patch`.
-- `RumbleVersion` (the full version) and `RumbleCommit` are in the Apple TV app's and the installer's Info.plist. The installer compares its own `RumbleVersion` with a tag's `minAppVersion`.
+- `RumbleVersion` (the full version) and `RumbleCommit` are in the Apple TV app's and the installer's Info.plist. The installer builds the tags whose major version matches its own `RumbleVersion`.

@@ -177,8 +177,8 @@ add_test(NAME new_game_classic_7300_frames COMMAND ${ROOT}/tests/headless/boot.s
          ${CMAKE_BINARY_DIR}/new-game-classic-test --input ${ROOT}/tests/input/new_game_classic.txt
          --dump-frame 7201 ${CMAKE_BINARY_DIR}/new-game-classic-test-hub.png)
 
-# Rumble TV Installer: the Mac app players download. It embeds Sparkle.framework, which only the
-# Xcode generator does; its logic (no UI) is tested with any generator (target rumble_installertest).
+# Rumble TV Installer: the Mac app players download. The app is built with the Xcode generator only
+# (it has an asset catalog); its logic (no UI) is tested with any generator (target rumble_installertest).
 enable_language(Swift)
 set(RUMBLE_INSTALLER_LOGIC_SOURCES
     "${ROOT}/apps/installer/Sources/PortEvent.swift"

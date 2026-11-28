@@ -418,6 +418,20 @@ def hardware_udid(device: str) -> str:
     return ''
 
 
+def remove_try_compiles(since: float) -> None:
+    """CMake's compiler checks run xcodebuild, which leaves a CMAKE_TRY_COMPILE-* folder each in
+    ~/Library/Developer/Xcode/DerivedData (and can't be pointed elsewhere). Removes the ones made since
+    `since`, so the build leaves nothing outside --work-dir."""
+    derived = Path.home() / 'Library' / 'Developer' / 'Xcode' / 'DerivedData'
+    for folder in derived.glob('CMAKE_TRY_COMPILE-*'):
+        try:
+            made = folder.stat().st_birthtime
+        except (OSError, AttributeError):
+            continue
+        if made >= since:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def cmd_build(ctx: Context) -> int:
     require_decomp()
     ctx.signing()
@@ -427,14 +441,20 @@ def cmd_build(ctx: Context) -> int:
     project = ctx.work / ctx.p['project']
     target = ctx.p['target']
     stamp = source_version()
-    configure = ['cmake', '--preset', ctx.p['preset'], '-B', project,
+    # The preset passes the SDK (CMAKE_OSX_SYSROOT) explicitly: /usr/bin/python3 runs through xcrun, which
+    # exports SDKROOT as the macOS SDK, and CMake would take that over the tvOS default.
+    configure = ['cmake', '--preset', ctx.p['preset'], '-B', project, '-DCMAKE_XCODE_GENERATE_SCHEME=ON',
                  f"-DRUMBLE_CONTENT_DIR={prepared['content']}",
                  f"-DRUMBLE_GENERATED_DIR={prepared['generated']}",
                  f"-DRUMBLE_VERSION={stamp['version']}", f"-DRUMBLE_COMMIT={stamp['commit']}",
                  f'-DRUMBLE_DEVELOPMENT_TEAM={ctx.team}', f'-DRUMBLE_BUNDLE_ID={ctx.bundle_id}']
     lines: List[str] = []
-    if stream(configure, cwd=ROOT, on_line=lines.append) != 0:
-        raise explain(lines, ctx)
+    started = datetime.datetime.now().timestamp()
+    try:
+        if stream(configure, cwd=ROOT, on_line=lines.append) != 0:
+            raise explain(lines, ctx)
+    finally:
+        remove_try_compiles(since=started)
 
     stage('compile', 'Compiling the game')
     stats_path = ctx.work / 'build-stats.json'
@@ -458,8 +478,16 @@ def cmd_build(ctx: Context) -> int:
             state['stage'] = 'sign'
             stage('sign', 'Signing the app')
 
-    build = ['cmake', '--build', project, '--config', CONFIGURATION, '--target', target,
-             '--', '-sdk', ctx.p['sdk'], '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration']
+    # xcodebuild itself, with the target's scheme: -derivedDataPath (which cmake --build's -target can't
+    # take) keeps Xcode's derived data (logs, index, module cache) inside the project, not in
+    # ~/Library/Developer/Xcode/DerivedData, so everything the build makes stays in --work-dir. The app
+    # still lands in <project>/tvos/<config>-appletvos (CMake's build location).
+    xcodeproj = next(project.glob('*.xcodeproj'), None)
+    if xcodeproj is None:
+        raise Failure('no-project', 'CMake made no Xcode project.', 'Copy Diagnostics to report it.')
+    build = ['xcodebuild', '-project', str(xcodeproj), '-scheme', target, '-configuration', CONFIGURATION,
+             '-destination', f"generic/platform={ctx.p['name']}", '-derivedDataPath', str(project / 'DerivedData'),
+             '-allowProvisioningUpdates', '-allowProvisioningDeviceRegistration']
     if stream(build, cwd=ROOT, on_line=on_line) != 0:
         raise explain(lines, ctx)
     if state['steps']:

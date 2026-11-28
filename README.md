@@ -22,11 +22,14 @@ Analog movement has been reworked to better fit modern game controls but everyth
 ## Install
 
 1. **Install the game in Dolphin.** Open [Dolphin](https://dolphin-emu.org), choose **Tools → Install WAD…**, and pick your Pokémon Rumble (USA) WAD. Dolphin keeps the decrypted game in its own folder, where the installer finds it. You can delete the WAD afterwards, but keep Dolphin's copy.
-2. **Download Rumble TV Installer** from the [latest release](https://github.com/chocoguy/pokemon-rumble-tv/releases/latest), unzip it and move it to Applications.
-3. **Open it and go through Setup.** It checks for Xcode, tvOS support in Xcode, CMake (it downloads it for you) and an Apple ID in Xcode, with a button to fix each one. Turn on Developer Mode on the Apple TV and pair it in Xcode (**Window → Devices and Simulators**).
-4. **Game → Install on an Apple TV…**, and pick your TV. The first build takes about 10 minutes. The installer never opens the game: find **Rumble** on the Apple TV's Home screen.
+2. **Download Rumble TV Installer** from the [latest release](https://github.com/chocoguy/pokemon-rumble-tv/releases/latest), unzip it and ***move it to Applications.***
+3. Make sure it's in the ***Applications folder***
+4. **Open it and go through Setup.** It checks for Xcode, tvOS support in Xcode, CMake (it downloads it for you) and an Apple ID in Xcode, with a button to fix each one. Turn on Developer Mode on the Apple TV and pair it in Xcode (**Window → Devices and Simulators**).
+5. **Game → Install on an Apple TV…**, and pick your TV. The first build takes about 10 minutes. The installer never opens the game: find **Rumble** on the Apple TV's Home screen.
 
-**Updates:** the installer checks GitHub for new releases. **Updates → Update All** rebuilds the game once and reinstalls it on every Apple TV you installed it on. Your saves stay. The installer updates itself, too (**Rumble TV Installer → Check for Updates…**).
+**Updates:** the installer checks GitHub for new releases. **Updates → Update All** rebuilds the game once and reinstalls it on every Apple TV you installed it on. Your saves stay. When a release needs a new installer, it says so and links to it: download it from the [latest release](https://github.com/chocoguy/pokemon-rumble-tv/releases/latest) and replace the old one. Until then, game updates wait, but Reinstall still works.
+
+**Storage:** everything the installer makes (the game's source, the imported game files, the build, CMake and logs) is in `~/Library/Application Support/Rumble TV Installer`, never inside the app, so replacing the installer loses nothing. **Setup → Storage** shows its size, with **Free Up Space** (removes the build) and **Remove Everything…** (the game stays on your Apple TVs).
 
 **Free Apple ID:** the game opens for 7 days after each install. The Game screen shows the date; reinstall before then. A paid Apple Developer membership lasts a year.
 
