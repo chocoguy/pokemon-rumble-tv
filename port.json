@@ -3,8 +3,8 @@
   "id": "pokemon-rumble-tv",
   "name": "Pokémon Rumble TV",
   "game": "Pokémon Rumble (WiiWare, USA)",
-  "version": "1.0.0",
-  "minAppVersion": "1.0.0",
+  "version": "2.0.0",
+  "minAppVersion": "2.0.0",
 
   "entry": "tools/tvos/port",
   "commands": ["check", "prepare", "build", "install", "installed", "clean"],
